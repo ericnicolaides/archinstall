@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
-from ..lib.menu import Menu
 from ..lib.storage import storage
 from ..lib.output import info
 from ..lib.menu.list_manager import ListManager
 from ..lib.menu.textinput import TextInput
 from ..lib.menu.verifytick import VerifyTick
 
-class ZFSMenu(Menu):
+class ZFSMenu:
     def __init__(self, minimal: bool = False):
-        super().__init__()
         self.minimal = minimal
         
     def show(self) -> None:

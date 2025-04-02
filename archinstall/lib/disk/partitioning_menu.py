@@ -508,7 +508,7 @@ class PartitioningList(ListManager):
 		fs_type = self._prompt_partition_fs_type()
 
 		mountpoint = None
-		if fs_type not in (FilesystemType.Btrfs, FilesystemType.LinuxSwap):
+		if fs_type not in (FilesystemType.Btrfs, FilesystemType.LinuxSwap, FilesystemType.ZFS):
 			mountpoint = self._prompt_mountpoint()
 
 		partition = PartitionModification(
