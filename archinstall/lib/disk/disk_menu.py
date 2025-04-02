@@ -1,12 +1,15 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, override, Optional, Dict, Any
+from __future__ import annotations
 
-from archinstall.lib.models.device_model import DiskLayoutConfiguration, DiskLayoutType, LvmConfiguration
+from archinstall.lib.models.device_model import DiskLayoutConfiguration, DiskLayoutType, LvmConfiguration, FilesystemType
 from archinstall.tui.menu_item import MenuItem, MenuItemGroup
 
 from ..interactions.disk_conf import select_disk_config, select_lvm_config
 from ..menu.abstract_menu import AbstractSubMenu
-from ..output import FormattedOutput
+from ..output import FormattedOutput, debug, info, error, warn
+from ..storage import storage
+from ..zfs import zfs_manager
 
 if TYPE_CHECKING:
 	from collections.abc import Callable
@@ -117,14 +120,14 @@ class DiskLayoutConfigurationMenu(AbstractSubMenu):
 			# Check for ZFS partitions and configuration status
 			has_zfs_partitions = False
 			for mod in device_mods:
-				if any(p.fs_type == FilesystemType.ZFS for p in mod.partitions):
+				if any(p.fs_type == FilesystemType.ZFS for p in mod.partitions if p.fs_type):
 					has_zfs_partitions = True
 					break
 			
 			if has_zfs_partitions:
-				from ..storage import storage
-				zfs_config_status = "ZFS config: " + ("Complete" if storage.get('zfs_pool_name') else "Missing")
-				output_partition += f"{zfs_config_status}\n"
+				pool_name = zfs_manager._pool_name
+				status = "Complete" if pool_name else "Missing"
+				output_partition += f"ZFS Config Status: {status}\n"
 
 			for mod in device_mods:
 				# create partition table

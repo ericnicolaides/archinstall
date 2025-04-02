@@ -774,9 +774,6 @@ class FilesystemType(Enum):
 	Xfs = 'xfs'
 	LinuxSwap = 'linux-swap'
 	ZFS = 'zfs'
-
-	# this is not a FS known to parted, so be careful
-	# with the usage from this enum
 	Crypto_luks = 'crypto_LUKS'
 
 	def is_crypto(self) -> bool:
@@ -784,51 +781,73 @@ class FilesystemType(Enum):
 
 	@property
 	def fs_type_mount(self) -> str:
+		"""Return the filesystem type as used in mount commands"""
 		match self:
-			case FilesystemType.Ntfs:
-				return 'ntfs3'
-			case FilesystemType.Fat32:
-				return 'vfat'
+			case FilesystemType.LinuxSwap:
+				return 'swap'
+			case FilesystemType.ZFS:
+				return 'zfs'
 			case _:
 				return self.value
 
 	@property
 	def parted_value(self) -> str:
-		return self.value + '(v1)' if self == FilesystemType.LinuxSwap else self.value
+		"""Return the filesystem type as used by parted"""
+		match self:
+			case FilesystemType.LinuxSwap:
+				return 'linux-swap'
+			case FilesystemType.ZFS:
+				return 'zfs'
+			case _:
+				return self.value
 
 	@property
 	def installation_pkg(self) -> str | None:
+		"""Return the package name required for this filesystem"""
 		match self:
 			case FilesystemType.Btrfs:
 				return 'btrfs-progs'
-			case FilesystemType.Xfs:
-				return 'xfsprogs'
 			case FilesystemType.F2fs:
 				return 'f2fs-tools'
+			case FilesystemType.Ntfs:
+				return 'ntfs-3g'
+			case FilesystemType.Xfs:
+				return 'xfsprogs'
+			case FilesystemType.ZFS:
+				return 'zfs-utils'
 			case _:
 				return None
 
 	@property
 	def installation_module(self) -> str | None:
+		"""Return the kernel module name required for this filesystem"""
 		match self:
-			case FilesystemType.Btrfs:
-				return 'btrfs'
+			case FilesystemType.ZFS:
+				return 'zfs'
 			case _:
 				return None
 
 	@property
 	def installation_binary(self) -> str | None:
+		"""Return the binary name required for this filesystem"""
 		match self:
 			case FilesystemType.Btrfs:
-				return '/usr/bin/btrfs'
+				return 'mkfs.btrfs'
+			case FilesystemType.F2fs:
+				return 'mkfs.f2fs'
+			case FilesystemType.Xfs:
+				return 'mkfs.xfs'
+			case FilesystemType.ZFS:
+				return 'zfs'
 			case _:
 				return None
 
 	@property
 	def installation_hooks(self) -> str | None:
+		"""Return the mkinitcpio hooks required for this filesystem"""
 		match self:
-			case FilesystemType.Btrfs:
-				return 'btrfs'
+			case FilesystemType.ZFS:
+				return 'zfs'
 			case _:
 				return None
 
