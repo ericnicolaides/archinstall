@@ -39,10 +39,23 @@ class ZFSMenu:
             if not self.minimal:
                 options.append(('Save and Return', 'Save configuration and return to previous menu'))
             
-            selected_option, index = ListManager(
-                options,
-                'ZFS Configuration Options'
+            # Instead of using ListManager which doesn't work well for this simple menu,
+            # let's use SelectMenu directly which should be more appropriate
+            menu_items = [MenuItem(option[0], value=option) for option in options]
+            group = MenuItemGroup(menu_items, sort_items=False)
+            
+            result = SelectMenu(
+                group,
+                header='ZFS Configuration Options',
+                alignment=Alignment.CENTER,
+                allow_skip=False
             ).run()
+            
+            if result.type_ != ResultType.Selection:
+                break
+                
+            selected_item = result.get_value()
+            selected_option = selected_item[0]
             
             if selected_option == 'Pool Name':
                 result = EditMenu(
@@ -55,18 +68,24 @@ class ZFSMenu:
                     storage['zfs_pool_name'] = result.text()
             
             elif selected_option == 'Compression':
-                compression_options = [
-                    ('lz4', 'LZ4 (default, balanced)'),
-                    ('zstd', 'ZSTD (better compression, more CPU)'),
-                    ('gzip', 'GZIP (high compression, high CPU)'),
-                    ('off', 'No compression')
+                # Create a simple menu for compression options
+                comp_items = [
+                    MenuItem('LZ4 (default, balanced)', value='lz4'),
+                    MenuItem('ZSTD (better compression, more CPU)', value='zstd'),
+                    MenuItem('GZIP (high compression, high CPU)', value='gzip'),
+                    MenuItem('No compression', value='off')
                 ]
-                selected_comp, _ = ListManager(
-                    compression_options,
-                    'Select ZFS Compression Algorithm'
+                comp_group = MenuItemGroup(comp_items, sort_items=False)
+                
+                comp_result = SelectMenu(
+                    comp_group,
+                    header='Select ZFS Compression Algorithm',
+                    alignment=Alignment.CENTER,
+                    allow_skip=False
                 ).run()
-                if selected_comp:
-                    storage['zfs_compression'] = selected_comp
+                
+                if comp_result.type_ == ResultType.Selection:
+                    storage['zfs_compression'] = comp_result.get_value()
             
             elif selected_option == 'Boot Environment':
                 result = EditMenu(
@@ -117,5 +136,5 @@ class ZFSMenu:
                     else:
                         info('Passwords do not match, please try again')
             
-            elif selected_option == 'Save and Return' or selected_option is None:
+            elif selected_option == 'Save and Return':
                 break 
