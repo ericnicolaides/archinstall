@@ -4,9 +4,10 @@ from typing import Optional, Tuple
 
 from ..lib.storage import storage
 from ..lib.output import info
+from .curses_menu import EditMenu, SelectMenu
 from ..lib.menu.list_manager import ListManager
-from ..lib.menu.textinput import TextInput
-from ..lib.menu.verifytick import VerifyTick
+from .menu_item import MenuItem, MenuItemGroup
+from .types import Alignment, FrameProperties, Orientation, ResultType
 
 class ZFSMenu:
     def __init__(self, minimal: bool = False):
@@ -44,9 +45,14 @@ class ZFSMenu:
             ).run()
             
             if selected_option == 'Pool Name':
-                new_value = TextInput('Enter ZFS pool name').run()
-                if new_value:
-                    storage['zfs_pool_name'] = new_value
+                result = EditMenu(
+                    'Enter ZFS pool name: ',
+                    default=storage.get('zfs_pool_name', 'rpool'),
+                    allow_skip=True
+                ).input()
+                
+                if result.type_ == ResultType.Selection and result.text():
+                    storage['zfs_pool_name'] = result.text()
             
             elif selected_option == 'Compression':
                 compression_options = [
@@ -63,23 +69,51 @@ class ZFSMenu:
                     storage['zfs_compression'] = selected_comp
             
             elif selected_option == 'Boot Environment':
-                new_value = TextInput('Enter ZFS boot environment name').run()
-                if new_value:
-                    storage['zfs_boot_environment'] = new_value
+                result = EditMenu(
+                    'Enter ZFS boot environment name: ',
+                    default=storage.get('zfs_boot_environment', 'default'),
+                    allow_skip=True
+                ).input()
+                
+                if result.type_ == ResultType.Selection and result.text():
+                    storage['zfs_boot_environment'] = result.text()
             
             elif selected_option == 'Enable Encryption':
-                result = VerifyTick(
-                    'Enable ZFS native encryption?',
-                    default=storage.get('zfs_encryption', False)
+                # Create yes/no menu for encryption
+                group = MenuItemGroup.yes_no()
+                if storage.get('zfs_encryption', False):
+                    group.set_selected_by_value(MenuItem.yes().value)
+                else:
+                    group.set_selected_by_value(MenuItem.no().value)
+                    
+                result = SelectMenu(
+                    group,
+                    header='Enable ZFS native encryption?',
+                    alignment=Alignment.CENTER,
+                    orientation=Orientation.HORIZONTAL,
+                    columns=2,
+                    allow_skip=False
                 ).run()
-                storage['zfs_encryption'] = result
+                
+                storage['zfs_encryption'] = result.item() == MenuItem.yes()
             
             elif selected_option == 'Encryption Password' and storage.get('zfs_encryption', False):
-                new_value = TextInput('Enter ZFS encryption password', password=True).run()
-                if new_value:
-                    confirm = TextInput('Confirm password', password=True).run()
-                    if new_value == confirm:
-                        storage['zfs_encryption_password'] = new_value
+                result = EditMenu(
+                    'Enter ZFS encryption password: ',
+                    password=True,
+                    allow_skip=True
+                ).input()
+                
+                if result.type_ == ResultType.Selection and result.text():
+                    password = result.text()
+                    confirm_result = EditMenu(
+                        'Confirm password: ',
+                        password=True,
+                        allow_skip=True
+                    ).input()
+                    
+                    if confirm_result.type_ == ResultType.Selection and confirm_result.text() == password:
+                        storage['zfs_encryption_password'] = password
                     else:
                         info('Passwords do not match, please try again')
             

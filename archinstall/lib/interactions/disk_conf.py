@@ -34,6 +34,7 @@ from archinstall.tui.types import Alignment, FrameProperties, Orientation, Previ
 
 from ..output import FormattedOutput
 from ..utils.util import prompt_dir
+from ..storage import storage
 
 if TYPE_CHECKING:
 	from collections.abc import Callable
@@ -255,7 +256,8 @@ def select_main_filesystem_format() -> FilesystemType:
 		MenuItem('btrfs', value=FilesystemType.Btrfs),
 		MenuItem('ext4', value=FilesystemType.Ext4),
 		MenuItem('xfs', value=FilesystemType.Xfs),
-		MenuItem('f2fs', value=FilesystemType.F2fs)
+		MenuItem('f2fs', value=FilesystemType.F2fs),
+		MenuItem('zfs', value=FilesystemType.ZFS)
 	]
 
 	if arch_config_handler.args.advanced:
@@ -271,7 +273,14 @@ def select_main_filesystem_format() -> FilesystemType:
 
 	match result.type_:
 		case ResultType.Selection:
-			return result.get_value()
+			fs_type = result.get_value()
+			
+			# If ZFS is selected, show ZFS configuration menu
+			if fs_type == FilesystemType.ZFS:
+				from archinstall.tui.zfs_menu import ZFSMenu
+				ZFSMenu().show()
+			
+			return fs_type
 		case _:
 			raise ValueError('Unhandled result type')
 
@@ -327,6 +336,10 @@ def suggest_single_disk_layout(
 ) -> DeviceModification:
 	if not filesystem_type:
 		filesystem_type = select_main_filesystem_format()
+		
+	# If ZFS is selected, use the ZFS-specific layout
+	if filesystem_type == FilesystemType.ZFS:
+		return suggest_zfs_layout(device)
 
 	sector_size = device.device_info.sector_size
 	total_size = device.device_info.total_size
@@ -658,3 +671,53 @@ def suggest_lvm_layout(
 		lvm_vol_group.volumes.append(home_vol)
 
 	return LvmConfiguration(LvmLayoutType.Default, [lvm_vol_group])
+
+
+def suggest_zfs_layout(device: BDevice) -> DeviceModification:
+	"""
+	Creates a recommended ZFS partition layout for a single disk.
+	- EFI partition for boot
+	- The rest of the disk for ZFS
+	"""
+	# Initialize ZFS storage with defaults if not set
+	if not storage.get('zfs_pool_name', None):
+		storage['zfs_pool_name'] = 'rpool'
+		storage['zfs_compression'] = 'lz4'
+		storage['zfs_boot_environment'] = 'default'
+		storage['zfs_encryption'] = False
+		storage['zfs_encryption_password'] = ''
+	
+	device_modification = DeviceModification(device, wipe=True)
+	
+	sector_size = device.device_info.sector_size
+	total_size = device.device_info.total_size
+	available_space = total_size
+	
+	using_gpt = device_handler.partition_table.is_gpt()
+	
+	if using_gpt:
+		available_space = available_space.gpt_end()
+	
+	available_space = available_space.align()
+	
+	# Create boot partition (EFI)
+	boot_partition = _boot_partition(sector_size, using_gpt)
+	device_modification.add_partition(boot_partition)
+	
+	# Create ZFS partition for the rest of the disk
+	zfs_start = boot_partition.start + boot_partition.length
+	zfs_length = available_space - zfs_start
+	
+	zfs_partition = PartitionModification(
+		status=ModificationStatus.Create,
+		type=PartitionType.Primary,
+		start=zfs_start,
+		length=zfs_length,
+		mountpoint=None,  # ZFS manager will handle mounting
+		fs_type=FilesystemType.ZFS,
+		mount_options=[]
+	)
+	
+	device_modification.add_partition(zfs_partition)
+	
+	return device_modification
