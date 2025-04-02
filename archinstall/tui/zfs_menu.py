@@ -60,7 +60,7 @@ class ZFSMenu:
             if selected_option == 'Pool Name':
                 result = EditMenu(
                     'Enter ZFS pool name: ',
-                    default=storage.get('zfs_pool_name', 'rpool'),
+                    default_text=storage.get('zfs_pool_name', 'rpool'),
                     allow_skip=True
                 ).input()
                 
@@ -90,7 +90,7 @@ class ZFSMenu:
             elif selected_option == 'Boot Environment':
                 result = EditMenu(
                     'Enter ZFS boot environment name: ',
-                    default=storage.get('zfs_boot_environment', 'default'),
+                    default_text=storage.get('zfs_boot_environment', 'default'),
                     allow_skip=True
                 ).input()
                 
@@ -119,7 +119,7 @@ class ZFSMenu:
             elif selected_option == 'Encryption Password' and storage.get('zfs_encryption', False):
                 result = EditMenu(
                     'Enter ZFS encryption password: ',
-                    password=True,
+                    hide_input=True,
                     allow_skip=True
                 ).input()
                 
@@ -127,7 +127,7 @@ class ZFSMenu:
                     password = result.text()
                     confirm_result = EditMenu(
                         'Confirm password: ',
-                        password=True,
+                        hide_input=True,
                         allow_skip=True
                     ).input()
                     
