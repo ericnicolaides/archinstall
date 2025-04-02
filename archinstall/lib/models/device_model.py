@@ -773,6 +773,7 @@ class FilesystemType(Enum):
 	Ntfs = 'ntfs'
 	Xfs = 'xfs'
 	LinuxSwap = 'linux-swap'
+	ZFS = 'zfs'
 
 	# this is not a FS known to parted, so be careful
 	# with the usage from this enum

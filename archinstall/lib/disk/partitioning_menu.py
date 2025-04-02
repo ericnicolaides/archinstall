@@ -413,7 +413,12 @@ class PartitioningList(ListManager):
 
 		match result.type_:
 			case ResultType.Selection:
-				return result.get_value()
+				fs_type = result.get_value()
+				# Show ZFS configuration menu when ZFS is selected
+				if fs_type == FilesystemType.ZFS:
+					from archinstall.tui.zfs_menu import ZFSMenu
+					ZFSMenu().show()
+				return fs_type
 			case _:
 				raise ValueError('Unhandled result type')
 

@@ -266,6 +266,10 @@ class DeviceHandler:
 		path: Path,
 		additional_parted_options: list[str] = []
 	) -> None:
+		if fs_type == FilesystemType.ZFS:
+			debug('ZFS filesystem type detected - skipping traditional format')
+			return
+			
 		mkfs_type = fs_type.value
 		command = None
 		options = []

@@ -30,6 +30,8 @@ from archinstall.lib.models.device_model import (
 from archinstall.lib.models.packages import Repository
 from archinstall.tui.curses_menu import Tui
 
+from .zfs import zfs_manager
+
 from .args import arch_config_handler
 from .exceptions import DiskError, HardwareIncompatibilityError, RequirementError, ServiceException, SysCallError
 from .general import SysCommand, run
@@ -154,6 +156,41 @@ class Installer:
 	def append_mod(self, mod: str) -> None:
 		if mod not in self._modules:
 			self._modules.append(mod)
+
+	def _has_zfs_config(self) -> bool:
+		"""Check if ZFS configuration is present in storage"""
+		return 'zfs_pool_name' in storage
+
+	def perform_installation(self, mountpoint: Path) -> bool:
+		"""
+		Performs the installation steps on a block device.
+		Only requirement is that the block devices exist.
+		"""
+		
+		# If ZFS is configured, handle it separately
+		if self._has_zfs_config():
+			info("ZFS configuration detected, using ZFS installation path")
+			
+			# Get device paths from disk config
+			devices = []
+			for mod in self._disk_config.device_modifications:
+				for part_mod in mod.partitions:
+					if part_mod.dev_path:
+						devices.append(str(part_mod.dev_path))
+			
+			# Handle ZFS setup
+			if not zfs_manager.setup_zfs_system(devices, self.target):
+				error("ZFS setup failed")
+				return False
+			
+			# Continue with the rest of the installation
+			# No need to format or mount partitions as ZFS manager handled it
+		else:
+			# Existing non-ZFS installation path
+			pass
+		
+		# Continue with package installation and system configuration
+		return True
 
 	def _verify_service_stop(self) -> None:
 		"""
@@ -806,6 +843,10 @@ class Installer:
 		hostname: str | None = None,
 		locale_config: LocaleConfiguration | None = LocaleConfiguration.default()
 	):
+		# Add ZFS packages if needed
+		if self._has_zfs_config():
+			self._base_packages.extend(['zfs-dkms', 'zfs-utils', 'linux-headers'])
+
 		if self._disk_config.lvm_config:
 			lvm = 'lvm2'
 			self.add_additional_packages(lvm)
