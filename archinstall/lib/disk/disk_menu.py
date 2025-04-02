@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, override, Optional, Dict, Any
-from __future__ import annotations
 
 from archinstall.lib.models.device_model import DiskLayoutConfiguration, DiskLayoutType, LvmConfiguration, FilesystemType
 from archinstall.tui.menu_item import MenuItem, MenuItemGroup
