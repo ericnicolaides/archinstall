@@ -9,6 +9,7 @@ from ..lib.menu.list_manager import ListManager
 from .menu_item import MenuItem, MenuItemGroup
 from .types import Alignment, FrameProperties, Orientation, ResultType
 from ..lib.disk.device_handler import device_handler
+from ..lib.models.device_model import DeviceModification
 
 class ZFSMenu:
     def __init__(self, minimal: bool = False, is_guided: bool = False):
@@ -155,9 +156,12 @@ class ZFSMenu:
         # For guided partitioning, we always start clean
         if self.is_guided:
             # Clear any existing partitions since this is guided mode
-            for device_mod in device_handler.modifiers:
-                device_mod.partitions.clear()
-                device_mod.wipe = True
+            storage.setdefault('device_modifications', [])
+            storage['device_modifications'] = []
+            for device in device_handler._devices.values():
+                # Create a new device modification that wipes the device
+                device_mod = DeviceModification(device=device, wipe=True)
+                storage['device_modifications'].append(device_mod)
             
             # Show boot strategy selection directly
             boot_items = [
@@ -188,10 +192,10 @@ class ZFSMenu:
         has_existing_partitions = False
         has_existing_boot = False
         
-        for device_mod in device_handler.modifiers:
-            if device_mod.partitions:
+        for device in device_handler._devices.values():
+            if device.partition_infos:
                 has_existing_partitions = True
-                for part in device_mod.partitions:
+                for part in device.partition_infos:
                     if part.mountpoint and str(part.mountpoint) == '/boot':
                         has_existing_boot = True
                         break
@@ -221,9 +225,12 @@ class ZFSMenu:
             if warning_result.type_ == ResultType.Selection:
                 if warning_result.get_value() == 'delete':
                     # Clear all existing partitions
-                    for device_mod in device_handler.modifiers:
-                        device_mod.partitions.clear()
-                        device_mod.wipe = True
+                    storage.setdefault('device_modifications', [])
+                    storage['device_modifications'] = []
+                    for device in device_handler._devices.values():
+                        # Create a new device modification that wipes the device
+                        device_mod = DeviceModification(device=device, wipe=True)
+                        storage['device_modifications'].append(device_mod)
                     has_existing_boot = False
                 elif has_existing_boot:
                     # If keeping existing boot, force separate boot strategy
