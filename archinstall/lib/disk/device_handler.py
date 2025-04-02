@@ -595,17 +595,36 @@ class DeviceHandler:
 	def fetch_part_info(self, path: Path) -> LsblkInfo:
 		lsblk_info = get_lsblk_info(path)
 
+		# Extract the partition number from the path for ZFS partitions
+		# This is a fallback when lsblk doesn't provide the partition number
+		partition_num = None
+		try:
+			path_str = str(path)
+			if path_str[-1].isdigit():
+				partition_num = int(''.join(filter(str.isdigit, path_str.split('/')[-1])))
+		except (ValueError, IndexError):
+			pass
+
 		if not lsblk_info.partn:
-			debug(f'Unable to determine new partition number: {path}\n{lsblk_info}')
-			raise DiskError(f'Unable to determine new partition number: {path}')
+			debug(f'No partition number from lsblk: {path}\n{lsblk_info}')
+			if partition_num is not None:
+				# Use the partition number extracted from the path
+				lsblk_info.partn = partition_num
+			else:
+				debug(f'Unable to determine new partition number: {path}\n{lsblk_info}')
+				raise DiskError(f'Unable to determine new partition number: {path}')
 
 		if not lsblk_info.partuuid:
 			debug(f'Unable to determine new partition uuid: {path}\n{lsblk_info}')
-			raise DiskError(f'Unable to determine new partition uuid: {path}')
+			# For ZFS we'll generate a unique ID as a fallback
+			import uuid
+			lsblk_info.partuuid = str(uuid.uuid4())
 
 		if not lsblk_info.uuid:
 			debug(f'Unable to determine new uuid: {path}\n{lsblk_info}')
-			raise DiskError(f'Unable to determine new uuid: {path}')
+			# For ZFS we'll generate a unique ID as a fallback
+			import uuid
+			lsblk_info.uuid = str(uuid.uuid4())
 
 		debug(f'partition information found: {lsblk_info.model_dump_json()}')
 

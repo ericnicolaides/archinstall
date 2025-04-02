@@ -371,6 +371,14 @@ class Installer:
 		if not part_mod.dev_path:
 			return
 
+		# Special handling for ZFS - we don't mount ZFS partitions here 
+		# as they'll be handled by the ZFS manager
+		if part_mod.fs_type == FilesystemType.ZFS:
+			from .storage import storage
+			if storage.get('zfs_pool_name'):
+				debug(f'Skipping mount for ZFS partition: {part_mod.dev_path}')
+				return
+
 		# it would be none if it's btrfs as the subvolumes will have the mountpoints defined
 		if part_mod.mountpoint:
 			target = self.target / part_mod.relative_mountpoint
@@ -385,6 +393,17 @@ class Installer:
 			device_handler.swapon(part_mod.dev_path)
 
 	def _mount_lvm_vol(self, volume: LvmVolume) -> None:
+		if not volume.dev_path:
+			return
+			
+		# Special handling for ZFS - we don't mount ZFS volumes here
+		# as they'll be handled by the ZFS manager
+		if volume.fs_type == FilesystemType.ZFS:
+			from .storage import storage
+			if storage.get('zfs_pool_name'):
+				debug(f'Skipping mount for ZFS volume: {volume.dev_path}')
+				return
+				
 		if volume.fs_type != FilesystemType.Btrfs:
 			if volume.mountpoint and volume.dev_path:
 				target = self.target / volume.relative_mountpoint

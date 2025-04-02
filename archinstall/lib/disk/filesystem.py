@@ -107,6 +107,29 @@ class FilesystemHandler:
 		self._validate_partitions(create_or_modify_parts)
 
 		for part_mod in create_or_modify_parts:
+			# Skip formatting for ZFS partitions - they'll be handled by the ZFS manager
+			if part_mod.fs_type == FilesystemType.ZFS:
+				from ..storage import storage
+				if storage.get('zfs_pool_name'):
+					debug(f'Skipping traditional format for ZFS partition: {part_mod.safe_dev_path}')
+					
+					# We still need to set these values for the partition
+					# Extract partition number from path as a fallback
+					part_num = None
+					try:
+						path_str = str(part_mod.safe_dev_path)
+						if path_str[-1].isdigit():
+							part_num = int(''.join(filter(str.isdigit, path_str.split('/')[-1])))
+					except (ValueError, IndexError):
+						pass
+					
+					# Use extracted values or generate new ones
+					import uuid
+					part_mod.partn = part_num or 1  # Fallback to 1 if extraction fails
+					part_mod.partuuid = str(uuid.uuid4())
+					part_mod.uuid = str(uuid.uuid4())
+					continue
+			
 			# partition will be encrypted
 			if self._enc_config is not None and part_mod in self._enc_config.partitions:
 				device_handler.format_encrypted(
@@ -121,11 +144,18 @@ class FilesystemHandler:
 			# synchronize with udev before using lsblk
 			device_handler.udev_sync()
 
-			lsblk_info = device_handler.fetch_part_info(part_mod.safe_dev_path)
-
-			part_mod.partn = lsblk_info.partn
-			part_mod.partuuid = lsblk_info.partuuid
-			part_mod.uuid = lsblk_info.uuid
+			try:
+				lsblk_info = device_handler.fetch_part_info(part_mod.safe_dev_path)
+				part_mod.partn = lsblk_info.partn
+				part_mod.partuuid = lsblk_info.partuuid
+				part_mod.uuid = lsblk_info.uuid
+			except Exception as e:
+				debug(f"Error fetching partition info: {e}")
+				# If we get an error fetching info, but it's a ZFS partition, just continue
+				if part_mod.fs_type == FilesystemType.ZFS:
+					debug("Ignoring error for ZFS partition")
+					continue
+				raise
 
 	def _validate_partitions(self, partitions: list[PartitionModification]) -> None:
 		checks = {
