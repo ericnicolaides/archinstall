@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 
 from .output import debug, info, error
 from .exceptions import DiskError
-from .installer.utils import SysCommand, SysCallError
+from .general import SysCommand, SysCallError, SysCommandWorker
 from .storage import storage
 
 class ZFSManager:
@@ -87,7 +87,7 @@ class ZFSManager:
             return True
             
         try:
-            from .installer.utils import SysCommandWorker
+            from .general import SysCommandWorker
             
             # Create a new encrypted dataset
             cmd = ["zfs", "create",
