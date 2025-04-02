@@ -414,10 +414,56 @@ class PartitioningList(ListManager):
 		match result.type_:
 			case ResultType.Selection:
 				fs_type = result.get_value()
-				# Show ZFS configuration menu when ZFS is selected
+				# Handle ZFS filesystem type selection
 				if fs_type == FilesystemType.ZFS:
-					from archinstall.tui.zfs_menu import ZFSMenu
-					ZFSMenu().show()
+					# Ask for ZFS partition purpose
+					purpose_items = [
+						MenuItem("ZFS root pool member", value="root"),
+						MenuItem("ZFS boot pool member", value="boot"),
+						MenuItem("ZFS pool member (non-boot)", value="data")
+					]
+					purpose_group = MenuItemGroup(purpose_items, sort_items=False)
+					
+					purpose_result = SelectMenu(
+						purpose_group,
+						header="Select the purpose of this ZFS partition:",
+						alignment=Alignment.CENTER,
+						frame=FrameProperties.min(str(_('ZFS Partition Purpose'))),
+						allow_skip=False
+					).run()
+					
+					if purpose_result.type_ == ResultType.Selection:
+						purpose = purpose_result.get_value()
+						from ..storage import storage
+						
+						# Store the purpose for this partition
+						if not storage.get('zfs_partitions'):
+							storage['zfs_partitions'] = {}
+						
+						# We'll use the path as key later when we have one
+						storage['zfs_partition_purpose'] = purpose
+						
+						# Prompt for ZFS configuration if not already done
+						from archinstall.tui.zfs_menu import ZFSMenu
+						
+						# Show configuration prompt
+						yes_no_group = MenuItemGroup.yes_no()
+						config_result = SelectMenu(
+							yes_no_group,
+							header="You've selected ZFS. Would you like to configure ZFS pool settings now?",
+							alignment=Alignment.CENTER,
+							orientation=Orientation.HORIZONTAL,
+							columns=2,
+							allow_skip=False
+						).run()
+						
+						if config_result.item() == MenuItem.yes():
+							ZFSMenu().show()
+						else:
+							# Show warning about incomplete configuration
+							from ..output import warning
+							warning("ZFS configuration is incomplete. Please go to ZFS Configuration menu before installation.")
+				
 				return fs_type
 			case _:
 				raise ValueError('Unhandled result type')
@@ -570,6 +616,14 @@ def manual_partitioning(
 		return device_mod
 
 	if mod.partitions:
+		# Check if there are ZFS partitions but no ZFS configuration
+		from ..storage import storage
+		has_zfs_partitions = any(p.fs_type == FilesystemType.ZFS for p in mod.partitions)
+		
+		if has_zfs_partitions and not storage.get('zfs_pool_name'):
+			from ..output import warning
+			warning("Warning: You have ZFS partitions but haven't completed ZFS configuration. Please go to ZFS Configuration menu before installation.")
+		
 		return mod
 
 	return None

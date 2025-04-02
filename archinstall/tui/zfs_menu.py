@@ -24,12 +24,18 @@ class ZFSMenu:
             storage['zfs_boot_environment'] = 'default'
             storage['zfs_encryption'] = False
             storage['zfs_encryption_password'] = ''
+            storage['zfs_boot_strategy'] = 'zfs_boot'  # Default to ZFS boot
+        
+        # First prompt for boot strategy if not already chosen
+        if not storage.get('zfs_boot_strategy_selected', False):
+            self._prompt_boot_strategy()
         
         while True:
             options = [
                 ('Pool Name', storage.get('zfs_pool_name', 'rpool')),
                 ('Compression', storage.get('zfs_compression', 'lz4')),
-                ('Boot Environment', storage.get('zfs_boot_environment', 'default')),
+                ('ZFS System Root Dataset Name', storage.get('zfs_boot_environment', 'default')),
+                ('Boot Strategy', 'ZFS Boot' if storage.get('zfs_boot_strategy', 'zfs_boot') == 'zfs_boot' else 'Separate Boot Partition'),
                 ('Enable Encryption', 'Yes' if storage.get('zfs_encryption', False) else 'No'),
             ]
             
@@ -87,15 +93,18 @@ class ZFSMenu:
                 if comp_result.type_ == ResultType.Selection:
                     storage['zfs_compression'] = comp_result.get_value()
             
-            elif selected_option == 'Boot Environment':
+            elif selected_option == 'ZFS System Root Dataset Name':
                 result = EditMenu(
-                    'Enter ZFS boot environment name: ',
+                    'Enter ZFS System Root Dataset Name (this configures where your system will boot from): ',
                     default_text=storage.get('zfs_boot_environment', 'default'),
                     allow_skip=True
                 ).input()
                 
                 if result.type_ == ResultType.Selection and result.text():
                     storage['zfs_boot_environment'] = result.text()
+            
+            elif selected_option == 'Boot Strategy':
+                self._prompt_boot_strategy()
             
             elif selected_option == 'Enable Encryption':
                 # Create yes/no menu for encryption
@@ -137,4 +146,29 @@ class ZFSMenu:
                         info('Passwords do not match, please try again')
             
             elif selected_option == 'Save and Return':
-                break 
+                break
+    
+    def _prompt_boot_strategy(self):
+        """Ask user for ZFS boot strategy"""
+        boot_items = [
+            MenuItem('Use ZFS for everything (except ESP)', value='zfs_boot'),
+            MenuItem('Use separate non-ZFS boot partition (ext4)', value='separate_boot')
+        ]
+        boot_group = MenuItemGroup(boot_items, sort_items=False)
+        
+        # Set selected based on previous selection if any
+        if storage.get('zfs_boot_strategy', 'zfs_boot') == 'separate_boot':
+            boot_group.set_selected_by_value('separate_boot')
+        else:
+            boot_group.set_selected_by_value('zfs_boot')
+        
+        boot_result = SelectMenu(
+            boot_group,
+            header='Select ZFS Boot Strategy',
+            alignment=Alignment.CENTER,
+            allow_skip=False
+        ).run()
+        
+        if boot_result.type_ == ResultType.Selection:
+            storage['zfs_boot_strategy'] = boot_result.get_value()
+            storage['zfs_boot_strategy_selected'] = True 

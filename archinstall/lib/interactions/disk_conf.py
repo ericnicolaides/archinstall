@@ -675,24 +675,27 @@ def suggest_lvm_layout(
 
 def suggest_zfs_layout(device: BDevice) -> DeviceModification:
 	"""
-	Creates a recommended ZFS partition layout for a single disk.
-	- EFI partition for boot
-	- The rest of the disk for ZFS
+	Create a suggested ZFS layout with proper boot partition
 	"""
-	# Initialize ZFS storage with defaults if not set
-	if not storage.get('zfs_pool_name', None):
+	from ..storage import storage
+	
+	# If ZFS is selected but no ZFS config done yet, initialize with defaults and show config menu
+	if not storage.get('zfs_pool_name'):
 		storage['zfs_pool_name'] = 'rpool'
 		storage['zfs_compression'] = 'lz4'
 		storage['zfs_boot_environment'] = 'default'
 		storage['zfs_encryption'] = False
 		storage['zfs_encryption_password'] = ''
-	
-	device_modification = DeviceModification(device, wipe=True)
-	
+		storage['zfs_boot_strategy'] = 'zfs_boot'  # Default to ZFS boot
+		
+		from archinstall.tui.zfs_menu import ZFSMenu
+		ZFSMenu().show()
+		
 	sector_size = device.device_info.sector_size
 	total_size = device.device_info.total_size
 	available_space = total_size
 	
+	device_modification = DeviceModification(device, wipe=True)
 	using_gpt = device_handler.partition_table.is_gpt()
 	
 	if using_gpt:
@@ -700,24 +703,47 @@ def suggest_zfs_layout(device: BDevice) -> DeviceModification:
 	
 	available_space = available_space.align()
 	
-	# Create boot partition (EFI)
+	# Create boot partition
 	boot_partition = _boot_partition(sector_size, using_gpt)
 	device_modification.add_partition(boot_partition)
 	
-	# Create ZFS partition for the rest of the disk
-	zfs_start = boot_partition.start + boot_partition.length
-	zfs_length = available_space - zfs_start
+	# Check if user wants separate non-ZFS boot
+	separate_boot = storage.get('zfs_boot_strategy') == 'separate_boot'
 	
-	zfs_partition = PartitionModification(
+	if separate_boot:
+		# Add an ext4 boot partition
+		boot_start = boot_partition.start + boot_partition.length
+		boot_length = Size(1, Unit.GiB, sector_size)
+		
+		linux_boot = PartitionModification(
+			status=ModificationStatus.Create,
+			type=PartitionType.Primary,
+			start=boot_start,
+			length=boot_length,
+			mountpoint=Path('/boot'),
+			fs_type=FilesystemType.Ext4,
+			flags=[PartitionFlag.BOOT]
+		)
+		device_modification.add_partition(linux_boot)
+		
+		# Root partition with ZFS
+		root_start = linux_boot.start + linux_boot.length
+		root_length = available_space - root_start
+	else:
+		# Root partition with ZFS (no separate boot)
+		root_start = boot_partition.start + boot_partition.length
+		root_length = available_space - root_start
+	
+	# Create the main ZFS partition
+	root_partition = PartitionModification(
 		status=ModificationStatus.Create,
 		type=PartitionType.Primary,
-		start=zfs_start,
-		length=zfs_length,
-		mountpoint=None,  # ZFS manager will handle mounting
-		fs_type=FilesystemType.ZFS,
-		mount_options=[]
+		start=root_start,
+		length=root_length,
+		mountpoint=Path('/'),
+		fs_type=FilesystemType.ZFS
 	)
 	
-	device_modification.add_partition(zfs_partition)
+	device_modification.add_partition(root_partition)
 	
 	return device_modification

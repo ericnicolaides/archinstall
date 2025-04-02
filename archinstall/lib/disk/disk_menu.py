@@ -113,6 +113,18 @@ class DiskLayoutConfigurationMenu(AbstractSubMenu):
 		if device_mods:
 			output_partition = '{}: {}\n'.format(str(_('Configuration')), disk_layout_conf.config_type.display_msg())
 			output_btrfs = ''
+			
+			# Check for ZFS partitions and configuration status
+			has_zfs_partitions = False
+			for mod in device_mods:
+				if any(p.fs_type == FilesystemType.ZFS for p in mod.partitions):
+					has_zfs_partitions = True
+					break
+			
+			if has_zfs_partitions:
+				from ..storage import storage
+				zfs_config_status = "ZFS config: " + ("Complete" if storage.get('zfs_pool_name') else "Missing")
+				output_partition += f"{zfs_config_status}\n"
 
 			for mod in device_mods:
 				# create partition table

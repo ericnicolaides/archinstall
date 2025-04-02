@@ -42,7 +42,28 @@ class Pacman:
 				error(str(_('Pre-existing pacman lock never exited. Please clean up any existing pacman sessions before using archinstall.')))
 				exit(1)
 
-		return SysCommand(f'{default_cmd} {args}')
+		# Try up to 3 times with increasing delays
+		max_retries = 3
+		retry_delay = 2  # seconds
+		
+		for attempt in range(max_retries):
+			try:
+				return SysCommand(f'{default_cmd} {args}')
+			except Exception as e:
+				if attempt < max_retries - 1:
+					warn(f"Package operation failed (attempt {attempt + 1}/{max_retries}): {e}")
+					warn(f"Retrying in {retry_delay} seconds...")
+					time.sleep(retry_delay)
+					retry_delay *= 2  # Exponential backoff
+					
+					# Try refreshing the package database before retrying
+					if 'failed to synchronize' in str(e).lower() or 'failed retrieving file' in str(e).lower():
+						try:
+							SysCommand('pacman -Syy')
+						except Exception as sync_err:
+							warn(f"Failed to refresh package database: {sync_err}")
+				else:
+					raise
 
 	def ask(self, error_message: str, bail_message: str, func: Callable, *args, **kwargs) -> None:  # type: ignore[type-arg]
 		while True:

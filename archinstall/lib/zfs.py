@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .output import debug, info, error
+from .output import debug, info, error, warn
 from .exceptions import DiskError
 from .general import SysCommand, SysCallError, SysCommandWorker
 from .storage import storage
@@ -190,8 +190,46 @@ class ZFSManager:
     def install_zfs_packages(self, target: Path) -> bool:
         """Install ZFS packages in the target system"""
         try:
-            SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", 
-                        "zfs-dkms", "zfs-utils", "linux-headers"])
+            # First ensure linux and headers are installed properly
+            try:
+                # Install linux kernel and headers first
+                SysCommand(["arch-chroot", str(target), "pacman", "-Sy", "--noconfirm"])
+                SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "linux"])
+                SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "linux-headers"])
+                
+                # Then try ZFS packages from official repos
+                SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "zfs-dkms", "zfs-utils"])
+                
+            except Exception as e:
+                info("Could not install ZFS from official repos, trying archzfs repo...")
+                
+                # Add archzfs repo if not present
+                with open(f"{target}/etc/pacman.conf", "r") as f:
+                    content = f.read()
+                    
+                if "[archzfs]" not in content:
+                    with open(f"{target}/etc/pacman.conf", "a") as f:
+                        f.write("\n[archzfs]\n")
+                        f.write("Server = https://archzfs.com/$repo/$arch\n")
+                
+                # Import and sign the archzfs key
+                try:
+                    SysCommand(["arch-chroot", str(target), "pacman-key", "-r", "F75D9D76"])
+                    SysCommand(["arch-chroot", str(target), "pacman-key", "--lsign-key", "F75D9D76"])
+                except Exception as key_error:
+                    warn(f"Could not import archzfs key: {key_error}")
+                
+                # Update repos and try installing again
+                SysCommand(["arch-chroot", str(target), "pacman", "-Sy"])
+                
+                # Install packages one by one to better handle dependencies
+                packages = ["linux", "linux-headers", "zfs-dkms", "zfs-utils"]
+                for pkg in packages:
+                    try:
+                        SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", pkg])
+                    except Exception as pkg_error:
+                        error(f"Failed to install {pkg}: {pkg_error}")
+                        return False
             
             # Configure mkinitcpio hooks for ZFS
             with open(f"{target}/etc/mkinitcpio.conf", "r") as f:
@@ -212,6 +250,8 @@ class ZFSManager:
             return True
         except Exception as e:
             error(f"Error installing ZFS packages: {e}")
+            error("Please ensure you have a working internet connection and try again.")
+            error("You may also try manually adding the archzfs repository: https://wiki.archlinux.org/title/ZFS#Installation")
             return False
 
     def configure_bootloader(self, target: Path) -> bool:
