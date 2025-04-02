@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, Dict, Any
+import time
 
 from .output import debug, info, error, warn
 from .exceptions import DiskError
@@ -190,18 +191,20 @@ class ZFSManager:
     def install_zfs_packages(self, target: Path) -> bool:
         """Install ZFS packages in the target system"""
         try:
-            # First ensure linux and headers are installed properly
+            # First try installing linux-headers as it's a prerequisite
             try:
-                # Install linux kernel and headers first
-                SysCommand(["arch-chroot", str(target), "pacman", "-Sy", "--noconfirm"])
-                SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "linux"])
+                info("Installing linux-headers...")
                 SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "linux-headers"])
-                
-                # Then try ZFS packages from official repos
-                SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "zfs-dkms", "zfs-utils"])
-                
             except Exception as e:
-                info("Could not install ZFS from official repos, trying archzfs repo...")
+                warn(f"Failed to install linux-headers: {e}")
+                # Continue anyway as headers might already be installed
+            
+            # Then try installing ZFS packages
+            try:
+                info("Installing ZFS packages...")
+                SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "zfs-dkms", "zfs-utils"])
+            except Exception as e:
+                warn(f"Failed to install ZFS packages from official repos, trying archzfs repo...")
                 
                 # Add archzfs repo if not present
                 with open(f"{target}/etc/pacman.conf", "r") as f:
@@ -219,23 +222,40 @@ class ZFSManager:
                 except Exception as key_error:
                     warn(f"Could not import archzfs key: {key_error}")
                 
-                # Update repos and try installing again
-                SysCommand(["arch-chroot", str(target), "pacman", "-Sy"])
+                # Update repos
+                info("Updating package database...")
+                try:
+                    SysCommand(["arch-chroot", str(target), "pacman", "-Syy"])
+                except Exception as e:
+                    warn(f"Failed to update package database: {e}")
                 
-                # Install packages one by one to better handle dependencies
-                packages = ["linux", "linux-headers", "zfs-dkms", "zfs-utils"]
+                # Install packages one by one with retries
+                packages = ["zfs-dkms", "zfs-utils"]
+                max_retries = 3
+                retry_delay = 5
+                
                 for pkg in packages:
-                    try:
-                        SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", pkg])
-                    except Exception as pkg_error:
-                        error(f"Failed to install {pkg}: {pkg_error}")
-                        return False
+                    for attempt in range(max_retries):
+                        try:
+                            info(f"Installing {pkg} (attempt {attempt + 1}/{max_retries})...")
+                            SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", pkg])
+                            break
+                        except Exception as pkg_error:
+                            if attempt < max_retries - 1:
+                                warn(f"Failed to install {pkg}: {pkg_error}")
+                                warn(f"Retrying in {retry_delay} seconds...")
+                                time.sleep(retry_delay)
+                                retry_delay *= 2  # Exponential backoff
+                            else:
+                                error(f"Failed to install {pkg} after {max_retries} attempts")
+                                return False
             
             # Configure mkinitcpio hooks for ZFS
+            info("Configuring mkinitcpio hooks...")
             with open(f"{target}/etc/mkinitcpio.conf", "r") as f:
                 content = f.read()
                 
-            # Add ZFS hooks
+            # Add ZFS hooks if not present
             if "zfs" not in content:
                 content = content.replace(
                     "HOOKS=(",
@@ -243,15 +263,30 @@ class ZFSManager:
                 
                 with open(f"{target}/etc/mkinitcpio.conf", "w") as f:
                     f.write(content)
-                    
-            # Rebuild initramfs
-            SysCommand(["arch-chroot", str(target), "mkinitcpio", "-P"])
+            
+            # Rebuild initramfs with retries
+            info("Rebuilding initramfs...")
+            max_retries = 3
+            retry_delay = 5
+            
+            for attempt in range(max_retries):
+                try:
+                    SysCommand(["arch-chroot", str(target), "mkinitcpio", "-P"])
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        warn(f"Failed to rebuild initramfs: {e}")
+                        warn(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        error(f"Failed to rebuild initramfs after {max_retries} attempts")
+                        return False
             
             return True
+            
         except Exception as e:
-            error(f"Error installing ZFS packages: {e}")
-            error("Please ensure you have a working internet connection and try again.")
-            error("You may also try manually adding the archzfs repository: https://wiki.archlinux.org/title/ZFS#Installation")
+            error(f"Error during ZFS package installation: {e}")
             return False
 
     def configure_bootloader(self, target: Path) -> bool:

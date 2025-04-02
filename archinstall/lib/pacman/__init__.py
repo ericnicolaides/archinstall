@@ -1,7 +1,7 @@
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 from ..exceptions import RequirementError
 from ..general import SysCommand
@@ -21,6 +21,9 @@ class Pacman:
 		self.synced = False
 		self.silent = silent
 		self.target = target
+		self.max_retries = 3
+		self.retry_delay = 5
+		self.batch_size = 5  # Install packages in batches of 5
 
 	@staticmethod
 	def run(args: str, default_cmd: str = 'pacman') -> SysCommand:
@@ -44,7 +47,7 @@ class Pacman:
 
 		# Try up to 3 times with increasing delays
 		max_retries = 3
-		retry_delay = 2  # seconds
+		retry_delay = 2
 		
 		for attempt in range(max_retries):
 			try:
@@ -88,7 +91,38 @@ class Pacman:
 		)
 		self.synced = True
 
+	def _install_package_batch(self, packages: List[str]) -> None:
+		"""Install a batch of packages with retries"""
+		for attempt in range(self.max_retries):
+			try:
+				info(f'Installing package batch: {packages}')
+				self.ask(
+					'Could not install packages',
+					'Package installation failed',
+					SysCommand,
+					f'pacstrap -C /etc/pacman.conf -K {self.target} {" ".join(packages)} --noconfirm',
+					peek_output=True
+				)
+				return
+			except Exception as e:
+				if attempt < self.max_retries - 1:
+					warn(f"Failed to install package batch (attempt {attempt + 1}/{self.max_retries}): {e}")
+					warn(f"Retrying in {self.retry_delay} seconds...")
+					time.sleep(self.retry_delay)
+					self.retry_delay *= 2  # Exponential backoff
+					
+					# Try refreshing the package database before retrying
+					try:
+						self.sync()
+					except Exception as sync_err:
+						warn(f"Failed to refresh package database: {sync_err}")
+				else:
+					raise
+
 	def strap(self, packages: str | list[str]) -> None:
+		"""
+		Install packages using pacstrap, with improved error handling and batch processing
+		"""
 		self.sync()
 		if isinstance(packages, str):
 			packages = [packages]
@@ -98,15 +132,12 @@ class Pacman:
 				if (result := plugin.on_pacstrap(packages)):
 					packages = result
 
-		info(f'Installing packages: {packages}')
+		info(f'Installing packages in batches of {self.batch_size}: {packages}')
 
-		self.ask(
-			'Could not strap in packages',
-			'Pacstrap failed. See /var/log/archinstall/install.log or above message for error details',
-			SysCommand,
-			f'pacstrap -C /etc/pacman.conf -K {self.target} {" ".join(packages)} --noconfirm',
-			peek_output=True
-		)
+		# Process packages in batches
+		for i in range(0, len(packages), self.batch_size):
+			batch = packages[i:i + self.batch_size]
+			self._install_package_batch(batch)
 
 
 __all__ = [
