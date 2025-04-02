@@ -199,56 +199,83 @@ class ZFSManager:
                 warn(f"Failed to install linux-headers: {e}")
                 # Continue anyway as headers might already be installed
             
-            # Then try installing ZFS packages
-            try:
-                info("Installing ZFS packages...")
-                SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", "zfs-dkms", "zfs-utils"])
-            except Exception as e:
-                warn(f"Failed to install ZFS packages from official repos, trying archzfs repo...")
-                
-                # Add archzfs repo if not present
-                with open(f"{target}/etc/pacman.conf", "r") as f:
-                    content = f.read()
+            # Add archzfs repo if not present
+            with open(f"{target}/etc/pacman.conf", "r") as f:
+                content = f.read()
                     
-                if "[archzfs]" not in content:
-                    with open(f"{target}/etc/pacman.conf", "a") as f:
-                        f.write("\n[archzfs]\n")
-                        f.write("Server = https://archzfs.com/$repo/$arch\n")
+            if "[archzfs]" not in content:
+                info("Adding archzfs repository...")
+                with open(f"{target}/etc/pacman.conf", "a") as f:
+                    f.write("\n[archzfs]\n")
+                    f.write("Server = https://archzfs.com/$repo/$arch\n")
                 
-                # Import and sign the archzfs key
+            # Import and sign the archzfs key with retries
+            max_key_retries = 3
+            key_retry_delay = 2
+            key_imported = False
+            
+            for attempt in range(max_key_retries):
                 try:
-                    SysCommand(["arch-chroot", str(target), "pacman-key", "-r", "F75D9D76"])
+                    info(f"Importing archzfs key (attempt {attempt + 1}/{max_key_retries})...")
+                    # Receive the key from keyserver
+                    SysCommand(["arch-chroot", str(target), "pacman-key", "--recv-keys", "F75D9D76"])
+                    # Sign the key locally
                     SysCommand(["arch-chroot", str(target), "pacman-key", "--lsign-key", "F75D9D76"])
+                    key_imported = True
+                    break
                 except Exception as key_error:
-                    warn(f"Could not import archzfs key: {key_error}")
+                    if attempt < max_key_retries - 1:
+                        warn(f"Failed to import/sign archzfs key: {key_error}")
+                        warn(f"Retrying in {key_retry_delay} seconds...")
+                        time.sleep(key_retry_delay)
+                        key_retry_delay *= 2
+                    else:
+                        error(f"Failed to import archzfs key after {max_key_retries} attempts")
+                        return False
+            
+            if not key_imported:
+                error("Could not import archzfs key")
+                return False
                 
-                # Update repos
-                info("Updating package database...")
+            # Update repos with retries
+            max_sync_retries = 3
+            sync_retry_delay = 2
+            
+            for attempt in range(max_sync_retries):
                 try:
+                    info(f"Updating package database (attempt {attempt + 1}/{max_sync_retries})...")
                     SysCommand(["arch-chroot", str(target), "pacman", "-Syy"])
+                    break
                 except Exception as e:
-                    warn(f"Failed to update package database: {e}")
-                
-                # Install packages one by one with retries
-                packages = ["zfs-dkms", "zfs-utils"]
-                max_retries = 3
-                retry_delay = 5
-                
-                for pkg in packages:
-                    for attempt in range(max_retries):
-                        try:
-                            info(f"Installing {pkg} (attempt {attempt + 1}/{max_retries})...")
-                            SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", pkg])
-                            break
-                        except Exception as pkg_error:
-                            if attempt < max_retries - 1:
-                                warn(f"Failed to install {pkg}: {pkg_error}")
-                                warn(f"Retrying in {retry_delay} seconds...")
-                                time.sleep(retry_delay)
-                                retry_delay *= 2  # Exponential backoff
-                            else:
-                                error(f"Failed to install {pkg} after {max_retries} attempts")
-                                return False
+                    if attempt < max_sync_retries - 1:
+                        warn(f"Failed to update package database: {e}")
+                        warn(f"Retrying in {sync_retry_delay} seconds...")
+                        time.sleep(sync_retry_delay)
+                        sync_retry_delay *= 2
+                    else:
+                        error(f"Failed to update package database after {max_sync_retries} attempts")
+                        return False
+            
+            # Install ZFS packages with retries
+            packages = ["zfs-dkms", "zfs-utils"]
+            max_install_retries = 3
+            install_retry_delay = 5
+            
+            for pkg in packages:
+                for attempt in range(max_install_retries):
+                    try:
+                        info(f"Installing {pkg} (attempt {attempt + 1}/{max_install_retries})...")
+                        SysCommand(["arch-chroot", str(target), "pacman", "-S", "--noconfirm", pkg])
+                        break
+                    except Exception as pkg_error:
+                        if attempt < max_install_retries - 1:
+                            warn(f"Failed to install {pkg}: {pkg_error}")
+                            warn(f"Retrying in {install_retry_delay} seconds...")
+                            time.sleep(install_retry_delay)
+                            install_retry_delay *= 2
+                        else:
+                            error(f"Failed to install {pkg} after {max_install_retries} attempts")
+                            return False
             
             # Configure mkinitcpio hooks for ZFS
             info("Configuring mkinitcpio hooks...")
@@ -266,21 +293,21 @@ class ZFSManager:
             
             # Rebuild initramfs with retries
             info("Rebuilding initramfs...")
-            max_retries = 3
-            retry_delay = 5
+            max_initramfs_retries = 3
+            initramfs_retry_delay = 5
             
-            for attempt in range(max_retries):
+            for attempt in range(max_initramfs_retries):
                 try:
                     SysCommand(["arch-chroot", str(target), "mkinitcpio", "-P"])
                     break
                 except Exception as e:
-                    if attempt < max_retries - 1:
+                    if attempt < max_initramfs_retries - 1:
                         warn(f"Failed to rebuild initramfs: {e}")
-                        warn(f"Retrying in {retry_delay} seconds...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2
+                        warn(f"Retrying in {initramfs_retry_delay} seconds...")
+                        time.sleep(initramfs_retry_delay)
+                        initramfs_retry_delay *= 2
                     else:
-                        error(f"Failed to rebuild initramfs after {max_retries} attempts")
+                        error(f"Failed to rebuild initramfs after {max_initramfs_retries} attempts")
                         return False
             
             return True

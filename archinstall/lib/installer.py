@@ -167,6 +167,11 @@ class Installer:
 		Only requirement is that the block devices exist.
 		"""
 		
+		# First, ensure partitions are mounted
+		if self._disk_config.config_type != DiskLayoutType.Pre_mount:
+			info("Mounting partitions...")
+			self.mount_ordered_layout()
+			
 		# If ZFS is configured, handle it separately
 		if self._has_zfs_config():
 			info("ZFS configuration detected, using ZFS installation path")
@@ -182,14 +187,18 @@ class Installer:
 			if not zfs_manager.setup_zfs_system(devices, self.target):
 				error("ZFS setup failed")
 				return False
-			
-			# Continue with the rest of the installation
-			# No need to format or mount partitions as ZFS manager handled it
-		else:
-			# Existing non-ZFS installation path
-			pass
 		
-		# Continue with package installation and system configuration
+		# Create necessary directories for package installation
+		info("Creating necessary directories...")
+		target_var = self.target / 'var'
+		target_var_cache = target_var / 'cache'
+		target_var_lib = target_var / 'lib'
+		
+		for dir_path in [target_var, target_var_cache, target_var_lib]:
+			if not dir_path.exists():
+				dir_path.mkdir(parents=True, exist_ok=True)
+		
+		# Now proceed with package installation and system configuration
 		return True
 
 	def _verify_service_stop(self) -> None:

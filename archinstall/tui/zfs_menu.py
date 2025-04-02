@@ -196,7 +196,7 @@ class ZFSMenu:
             if device.partition_infos:
                 has_existing_partitions = True
                 for part in device.partition_infos:
-                    if part.mountpoint and str(part.mountpoint) == '/boot':
+                    if part.mountpoints and '/boot' in [str(mp) for mp in part.mountpoints]:
                         has_existing_boot = True
                         break
         
