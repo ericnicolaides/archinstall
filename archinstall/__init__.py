@@ -64,17 +64,21 @@ def _fetch_arch_db() -> None:
 
 def _check_new_version() -> None:
 	info("Checking version...")
-	upgrade = None
-
+	
 	try:
-		upgrade = Pacman.run("-Qu archinstall").decode()
+		# First check if archinstall is installed as a package
+		try:
+			upgrade = Pacman.run("-Qu archinstall").decode()
+			if upgrade:
+				text = f'New version available: {upgrade}'
+				info(text)
+				time.sleep(3)
+		except Exception as e:
+			# If package not found, we're likely running from source
+			debug('Running from source/development version')
+			
 	except Exception as e:
-		debug(f'Failed determine pacman version: {e}')
-
-	if upgrade:
-		text = f'New version available: {upgrade}'
-		info(text)
-		time.sleep(3)
+		debug(f'Failed to determine version: {e}')
 
 
 def main() -> None:
