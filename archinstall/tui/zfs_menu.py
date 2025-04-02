@@ -8,10 +8,12 @@ from .curses_menu import EditMenu, SelectMenu
 from ..lib.menu.list_manager import ListManager
 from .menu_item import MenuItem, MenuItemGroup
 from .types import Alignment, FrameProperties, Orientation, ResultType
+from ..lib.disk.device_handler import device_handler
 
 class ZFSMenu:
-    def __init__(self, minimal: bool = False):
+    def __init__(self, minimal: bool = False, is_guided: bool = False):
         self.minimal = minimal
+        self.is_guided = is_guided
         
     def show(self) -> None:
         """
@@ -150,6 +152,87 @@ class ZFSMenu:
     
     def _prompt_boot_strategy(self):
         """Ask user for ZFS boot strategy"""
+        # For guided partitioning, we always start clean
+        if self.is_guided:
+            # Clear any existing partitions since this is guided mode
+            for device_mod in device_handler.modifiers:
+                device_mod.partitions.clear()
+                device_mod.wipe = True
+            
+            # Show boot strategy selection directly
+            boot_items = [
+                MenuItem('Use ZFS for everything (except ESP)', value='zfs_boot'),
+                MenuItem('Use separate non-ZFS boot partition (ext4)', value='separate_boot')
+            ]
+            boot_group = MenuItemGroup(boot_items, sort_items=False)
+            
+            # Set selected based on previous selection if any
+            if storage.get('zfs_boot_strategy', 'zfs_boot') == 'separate_boot':
+                boot_group.set_selected_by_value('separate_boot')
+            else:
+                boot_group.set_selected_by_value('zfs_boot')
+            
+            boot_result = SelectMenu(
+                boot_group,
+                header='Select ZFS Boot Strategy',
+                alignment=Alignment.CENTER,
+                allow_skip=False
+            ).run()
+            
+            if boot_result.type_ == ResultType.Selection:
+                storage['zfs_boot_strategy'] = boot_result.get_value()
+                storage['zfs_boot_strategy_selected'] = True
+            return
+            
+        # For manual partitioning, check for existing partitions
+        has_existing_partitions = False
+        has_existing_boot = False
+        
+        for device_mod in device_handler.modifiers:
+            if device_mod.partitions:
+                has_existing_partitions = True
+                for part in device_mod.partitions:
+                    if part.mountpoint and str(part.mountpoint) == '/boot':
+                        has_existing_boot = True
+                        break
+        
+        # If we have existing partitions in manual mode, show appropriate warning/options
+        if has_existing_partitions:
+            warning_items = [
+                MenuItem('Keep existing partitions (recommended)', value='keep'),
+                MenuItem('Delete all partitions and start over', value='delete')
+            ]
+            warning_group = MenuItemGroup(warning_items, sort_items=False)
+            
+            warning_text = "Warning: Existing partitions detected!\n\n"
+            if has_existing_boot:
+                warning_text += "An existing boot partition was found.\n"
+                warning_text += "- Keep: Will use existing boot partition\n"
+            warning_text += "- Delete: Will remove ALL existing partitions\n"
+            warning_text += "\nWhat would you like to do?"
+            
+            warning_result = SelectMenu(
+                warning_group,
+                header=warning_text,
+                alignment=Alignment.CENTER,
+                allow_skip=False
+            ).run()
+            
+            if warning_result.type_ == ResultType.Selection:
+                if warning_result.get_value() == 'delete':
+                    # Clear all existing partitions
+                    for device_mod in device_handler.modifiers:
+                        device_mod.partitions.clear()
+                        device_mod.wipe = True
+                    has_existing_boot = False
+                elif has_existing_boot:
+                    # If keeping existing boot, force separate boot strategy
+                    storage['zfs_boot_strategy'] = 'separate_boot'
+                    storage['zfs_boot_strategy_selected'] = True
+                    info('Using existing boot partition')
+                    return
+        
+        # Only show boot strategy selection if we're not using existing boot
         boot_items = [
             MenuItem('Use ZFS for everything (except ESP)', value='zfs_boot'),
             MenuItem('Use separate non-ZFS boot partition (ext4)', value='separate_boot')

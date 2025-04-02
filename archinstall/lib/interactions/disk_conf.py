@@ -278,7 +278,7 @@ def select_main_filesystem_format() -> FilesystemType:
 			# If ZFS is selected, show ZFS configuration menu
 			if fs_type == FilesystemType.ZFS:
 				from archinstall.tui.zfs_menu import ZFSMenu
-				ZFSMenu().show()
+				ZFSMenu(is_guided=True).show()
 			
 			return fs_type
 		case _:

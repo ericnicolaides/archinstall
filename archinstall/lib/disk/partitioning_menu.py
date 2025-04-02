@@ -458,7 +458,7 @@ class PartitioningList(ListManager):
 						).run()
 						
 						if config_result.item() == MenuItem.yes():
-							ZFSMenu().show()
+							ZFSMenu(is_guided=False).show()
 						else:
 							# Show warning about incomplete configuration
 							from ..output import warning
