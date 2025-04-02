@@ -556,8 +556,13 @@ class DeviceHandler:
 			length=length_sector.value
 		)
 
-		fs_value = part_mod.safe_fs_type.parted_value
-		filesystem = FileSystem(type=fs_value, geometry=geometry)
+		# Handle ZFS as a special case because parted doesn't support it
+		if part_mod.safe_fs_type == FilesystemType.ZFS:
+			# For ZFS, we'll create a partition with no filesystem
+			filesystem = None
+		else:
+			fs_value = part_mod.safe_fs_type.parted_value
+			filesystem = FileSystem(type=fs_value, geometry=geometry)
 
 		partition = Partition(
 			disk=disk,
@@ -570,7 +575,7 @@ class DeviceHandler:
 			partition.setFlag(flag.flag_id)
 
 		debug(f'\tType: {part_mod.type.value}')
-		debug(f'\tFilesystem: {fs_value}')
+		debug(f'\tFilesystem: {part_mod.safe_fs_type.value}')
 		debug(f'\tGeometry: {start_sector.value} start sector, {length_sector.value} length')
 
 		try:
