@@ -921,6 +921,9 @@ class Installer:
 				warn("Installation may fail if ZFS packages cannot be found")
 			
 			self._base_packages.extend(['zfs-dkms', 'zfs-utils', 'linux-headers'])
+			# Add zfs hook for mkinitcpio
+			if 'zfs' not in self._hooks:
+				self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
 
 		if self._disk_config.lvm_config:
 			lvm = 'lvm2'
@@ -1284,7 +1287,13 @@ class Installer:
 		config = grub_default.read_text()
 
 		kernel_parameters = ' '.join(self._get_kernel_params(root, False, False))
-		config = re.sub(r'(GRUB_CMDLINE_LINUX=")("\n)', rf'\1{kernel_parameters}\2', config, count=1)
+		# Add ZFS-specific parameters if needed
+		if self._has_zfs_config():
+			pool_name = storage.get('zfs_pool_name', "rpool")
+			boot_env = storage.get('zfs_boot_environment', "default")
+			kernel_parameters = f'root=ZFS={pool_name}/ROOT/{boot_env} zfs_force=1 {kernel_parameters}'
+			
+		config = re.sub(r'(GRUB_CMDLINE_LINUX=").*("\n)', rf'\1{kernel_parameters}\2', config, count=1)
 
 		grub_default.write_text(config)
 
