@@ -873,6 +873,31 @@ class Installer:
 	):
 		# Add ZFS packages if needed
 		if self._has_zfs_config():
+			# Set up archzfs repository before adding ZFS packages
+			info("Setting up archzfs repository...")
+			
+			# Add archzfs repository to pacman.conf
+			with open("/etc/pacman.conf", "r") as f:
+				content = f.read()
+				
+			if "[archzfs]" not in content:
+				with open("/etc/pacman.conf", "a") as f:
+					f.write("\n[archzfs]\n")
+					f.write("Server = https://archzfs.com/$repo/$arch\n")
+			
+			# Import and sign the archzfs key
+			try:
+				info("Importing and signing archzfs key...")
+				SysCommand(["pacman-key", "--recv-keys", "F75D9D76"])
+				SysCommand(["pacman-key", "--lsign-key", "F75D9D76"])
+				
+				# Update package database
+				info("Updating package database...")
+				SysCommand(["pacman", "-Syy"])
+			except Exception as e:
+				warn(f"Failed to set up archzfs repository: {e}")
+				warn("Installation may fail if ZFS packages cannot be found")
+			
 			self._base_packages.extend(['zfs-dkms', 'zfs-utils', 'linux-headers'])
 
 		if self._disk_config.lvm_config:
@@ -911,6 +936,17 @@ class Installer:
 		pacman_conf = Config(self.target)
 		pacman_conf.enable(optional_repositories)
 		pacman_conf.apply()
+
+		# Copy the archzfs repository configuration to the target system
+		if self._has_zfs_config():
+			info("Copying archzfs repository configuration to target system...")
+			with open(f"{self.target}/etc/pacman.conf", "r") as f:
+				content = f.read()
+				
+			if "[archzfs]" not in content:
+				with open(f"{self.target}/etc/pacman.conf", "a") as f:
+					f.write("\n[archzfs]\n")
+					f.write("Server = https://archzfs.com/$repo/$arch\n")
 
 		self.pacman.strap(self._base_packages)
 		self.helper_flags['base-strapped'] = True
