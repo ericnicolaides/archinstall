@@ -85,8 +85,13 @@ class Installer:
 		self.milliseconds = int(str(time.time()).split('.')[1])
 		self.helper_flags: dict[str, str | bool | None] = {'base': False, 'bootloader': None}
 
+		# Add selected kernels AND their corresponding headers to the base package list
 		for kernel in self.kernels:
-			self._base_packages.append(kernel)
+			if kernel not in self._base_packages:
+				self._base_packages.append(kernel)
+			headers = f"{kernel}-headers"
+			if headers not in self._base_packages:
+				self._base_packages.append(headers)
 
 		# If using accessibility tools in the live environment, append those to the packages list
 		if accessibility_tools_in_use():
@@ -871,15 +876,28 @@ class Installer:
 		hostname: str | None = None,
 		locale_config: LocaleConfiguration | None = LocaleConfiguration.default()
 	):
-		# If ZFS is configured, ensure the hook is added for mkinitcpio later.
-		# Repository setup and package addition are handled by the custom ISO build.
+		# Note: User-selected kernels and headers were added to _base_packages in __init__
+
+		# If ZFS is configured, ensure the hook is added for mkinitcpio later
+		# AND ensure at least linux and linux-lts kernels+headers are present as fallbacks.
 		if self._has_zfs_config():
-			info("ZFS configuration detected. Ensuring 'zfs' hook is included for mkinitcpio.")
+			info("ZFS configuration detected. Ensuring fallback kernels and ZFS hook are included.")
+			
+			# Ensure linux (stable) kernel and headers are present
+			if 'linux' not in self._base_packages:
+				self._base_packages.append('linux')
+			if 'linux-headers' not in self._base_packages:
+				self._base_packages.append('linux-headers')
+			
+			# Ensure linux-lts kernel and headers are present
+			if 'linux-lts' not in self._base_packages:
+				self._base_packages.append('linux-lts')
+			if 'linux-lts-headers' not in self._base_packages:
+				self._base_packages.append('linux-lts-headers')
+			
 			# Add zfs hook for mkinitcpio (will be configured after pacstrap)
 			if 'zfs' not in self._hooks:
 				self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
-			# DO NOT add zfs packages to self._base_packages here - they are on the ISO.
-			# DO NOT configure live env repo/keys here - they should be on the ISO.
 
 		if self._disk_config.lvm_config:
 			lvm = 'lvm2'
@@ -933,10 +951,10 @@ class Installer:
 		if self._has_zfs_config():
 			info("Installing ZFS DKMS packages onto target system...")
 			try:
-				# Install dkms variant for automatic module rebuilding on kernel updates
-				# Also ensure zfs-utils for hooks, and headers are present
+				# Install dkms variant and utils. Headers are installed by pacstrap now.
 				# Use --needed to avoid reinstalling headers if base included them
-				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils", "linux-lts-headers"]) 
+				# Headers (`linux-headers`, `linux-lts-headers`) should already be installed by pacstrap.
+				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"]) 
 			except Exception as e:
 				# Log error, potentially raise or warn user
 				error(f"Failed to install ZFS DKMS packages onto target system: {e}")
