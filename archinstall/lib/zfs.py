@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, Any
 import time
+import shutil
 
 from .output import debug, info, error, warn
 from .exceptions import DiskError
@@ -200,14 +201,26 @@ class ZFSManager:
                 # Continue anyway as headers might already be installed
             
             # Add archzfs repo if not present
-            with open(f"{target}/etc/pacman.conf", "r") as f:
+            target_etc = target / 'etc'
+            target_etc.mkdir(parents=True, exist_ok=True)
+            
+            target_pacman_conf = target_etc / 'pacman.conf'
+            if not target_pacman_conf.exists():
+                shutil.copy('/etc/pacman.conf', target_pacman_conf)
+                
+            with open(target_pacman_conf, "r") as f:
                 content = f.read()
                     
             if "[archzfs]" not in content:
                 info("Adding archzfs repository...")
-                with open(f"{target}/etc/pacman.conf", "a") as f:
+                with open(target_pacman_conf, "a") as f:
                     f.write("\n[archzfs]\n")
                     f.write("Server = https://archzfs.com/$repo/$arch\n")
+                
+            # Initialize pacman keyring directory structure
+            target_pacman_dir = target_etc / 'pacman.d'
+            target_pacman_dir.mkdir(parents=True, exist_ok=True)
+            (target_pacman_dir / 'gnupg').mkdir(parents=True, exist_ok=True)
                 
             # Import and sign the archzfs key with retries
             max_key_retries = 3
@@ -217,6 +230,9 @@ class ZFSManager:
             for attempt in range(max_key_retries):
                 try:
                     info(f"Importing archzfs key (attempt {attempt + 1}/{max_key_retries})...")
+                    # Initialize pacman keyring and populate with Arch Linux keys
+                    SysCommand(["arch-chroot", str(target), "pacman-key", "--init"])
+                    SysCommand(["arch-chroot", str(target), "pacman-key", "--populate", "archlinux"])
                     # Receive the key from keyserver
                     SysCommand(["arch-chroot", str(target), "pacman-key", "--recv-keys", "F75D9D76"])
                     # Sign the key locally

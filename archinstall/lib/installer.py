@@ -876,24 +876,46 @@ class Installer:
 			# Set up archzfs repository before adding ZFS packages
 			info("Setting up archzfs repository...")
 			
-			# Add archzfs repository to pacman.conf
-			with open("/etc/pacman.conf", "r") as f:
-				content = f.read()
-				
-			if "[archzfs]" not in content:
-				with open("/etc/pacman.conf", "a") as f:
-					f.write("\n[archzfs]\n")
-					f.write("Server = https://archzfs.com/$repo/$arch\n")
+			# Create necessary target directories
+			target_etc = self.target / 'etc'
+			target_etc.mkdir(parents=True, exist_ok=True)
 			
-			# Import and sign the archzfs key
+			# Copy the base pacman.conf if it doesn't exist
+			target_pacman_conf = target_etc / 'pacman.conf'
+			if not target_pacman_conf.exists():
+				shutil.copy('/etc/pacman.conf', target_pacman_conf)
+			
+			# Add archzfs repository to pacman.conf in both live and target environments
+			for conf_path in ["/etc/pacman.conf", target_pacman_conf]:
+				with open(conf_path, "r") as f:
+					content = f.read()
+					
+				if "[archzfs]" not in content:
+					with open(conf_path, "a") as f:
+						f.write("\n[archzfs]\n")
+						f.write("Server = https://archzfs.com/$repo/$arch\n")
+			
+			# Initialize pacman keyring directory structure in target
+			target_pacman_dir = target_etc / 'pacman.d'
+			target_pacman_dir.mkdir(parents=True, exist_ok=True)
+			(target_pacman_dir / 'gnupg').mkdir(parents=True, exist_ok=True)
+			
+			# Import and sign the archzfs key in both live and target environments
 			try:
-				info("Importing and signing archzfs key...")
+				info("Importing and signing archzfs key in live environment...")
 				SysCommand(["pacman-key", "--recv-keys", "F75D9D76"])
 				SysCommand(["pacman-key", "--lsign-key", "F75D9D76"])
 				
-				# Update package database
-				info("Updating package database...")
+				info("Importing and signing archzfs key in target environment...")
+				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--init"])
+				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--populate", "archlinux"])
+				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--recv-keys", "F75D9D76"])
+				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--lsign-key", "F75D9D76"])
+				
+				# Update package database in both environments
+				info("Updating package databases...")
 				SysCommand(["pacman", "-Syy"])
+				SysCommand(["arch-chroot", str(self.target), "pacman", "-Syy"])
 			except Exception as e:
 				warn(f"Failed to set up archzfs repository: {e}")
 				warn("Installation may fail if ZFS packages cannot be found")
