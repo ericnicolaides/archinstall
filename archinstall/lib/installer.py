@@ -871,59 +871,15 @@ class Installer:
 		hostname: str | None = None,
 		locale_config: LocaleConfiguration | None = LocaleConfiguration.default()
 	):
-		# Add ZFS packages if needed
+		# If ZFS is configured, ensure the hook is added for mkinitcpio later.
+		# Repository setup and package addition are handled by the custom ISO build.
 		if self._has_zfs_config():
-			# Set up archzfs repository before pacstrap
-			info("Setting up archzfs repository for live environment...")
-			
-			# 1. Add repo to live environment /etc/pacman.conf
-			live_pacman_conf = Path("/etc/pacman.conf")
-			with live_pacman_conf.open("a+") as f:
-				f.seek(0)
-				content = f.read()
-				if "[archzfs]" not in content:
-					f.write("\n[archzfs]\n")
-					f.write("Server = https://archzfs.com/$repo/$arch\n")
-			
-			# 2. Import and sign key in live environment
-			try:
-				info("Importing and signing archzfs key in live environment...")
-				SysCommand(["pacman-key", "--recv-keys", "F75D9D76"])
-				SysCommand(["pacman-key", "--lsign-key", "F75D9D76"])
-				
-				# 3. Sync database in live environment
-				info("Updating live package database...")
-				SysCommand(["pacman", "-Syy"])
-			except Exception as e:
-				warn(f"Failed to set up archzfs repository in live environment: {e}")
-				warn("Installation may fail if ZFS packages cannot be found by pacstrap")
-			
-			# 4. Ensure target /etc directory exists
-			target_etc = self.target / 'etc'
-			target_etc.mkdir(parents=True, exist_ok=True)
-			
-			# 5. Copy the (potentially updated) live pacman.conf to target for pacstrap
-			target_pacman_conf = target_etc / 'pacman.conf'
-			try:
-				info(f"Copying /etc/pacman.conf to {target_pacman_conf}")
-				shutil.copy(live_pacman_conf, target_pacman_conf)
-			except Exception as e:
-				warn(f"Failed to copy pacman.conf to target: {e}")
-				# Attempt to create the target pacman.conf manually if copy failed
-				if not target_pacman_conf.exists():
-					try:
-						target_pacman_conf.write_text(live_pacman_conf.read_text())
-					except Exception as write_e:
-						error(f"Could not create target pacman.conf: {write_e}")
-						# Cannot proceed without pacman.conf for pacstrap
-						raise RequirementError("Failed to prepare pacman.conf for target system.") from write_e
-			
-			# 6. Add ZFS packages to the list for pacstrap
-			self._base_packages.extend(['zfs-dkms', 'zfs-utils', 'linux-headers'])
-			
-			# 7. Add zfs hook for mkinitcpio (will be configured after pacstrap)
+			info("ZFS configuration detected. Ensuring 'zfs' hook is included for mkinitcpio.")
+			# Add zfs hook for mkinitcpio (will be configured after pacstrap)
 			if 'zfs' not in self._hooks:
 				self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
+			# DO NOT add zfs packages to self._base_packages here - they are on the ISO.
+			# DO NOT configure live env repo/keys here - they should be on the ISO.
 
 		if self._disk_config.lvm_config:
 			lvm = 'lvm2'
@@ -962,21 +918,54 @@ class Installer:
 		pacman_conf.enable(optional_repositories)
 		pacman_conf.apply()
 
-		# Copy the archzfs repository configuration to the target system
-		if self._has_zfs_config():
-			info("Copying archzfs repository configuration to target system...")
-			with open(f"{self.target}/etc/pacman.conf", "r") as f:
-				content = f.read()
-				
-			if "[archzfs]" not in content:
-				with open(f"{self.target}/etc/pacman.conf", "a") as f:
-					f.write("\n[archzfs]\n")
-					f.write("Server = https://archzfs.com/$repo/$arch\n")
+		# Remove the specific ZFS pacman.conf copying logic - it's redundant/handled by ISO.
+		# if self._has_zfs_config():
+		# 	info("Copying archzfs repository configuration to target system...")
+		# 	...
 
-		self.pacman.strap(self._base_packages)
+		self.pacman.strap(self._base_packages) 
 		self.helper_flags['base-strapped'] = True
 
 		pacman_conf.persist()
+
+		# == ZFS Post-Install Configuration ==
+		# Install ZFS DKMS packages and configure repo on the target system AFTER pacstrap
+		if self._has_zfs_config():
+			info("Installing ZFS DKMS packages onto target system...")
+			try:
+				# Install dkms variant for automatic module rebuilding on kernel updates
+				# Also ensure zfs-utils for hooks, and headers are present
+				# Use --needed to avoid reinstalling headers if base included them
+				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils", "linux-lts-headers"]) 
+			except Exception as e:
+				# Log error, potentially raise or warn user
+				error(f"Failed to install ZFS DKMS packages onto target system: {e}")
+				raise RequirementError("Failed to install essential ZFS packages on target.") from e
+
+			info("Configuring ArchZFS repository on target system...")
+			target_pacman_conf = self.target / 'etc' / 'pacman.conf'
+			try:
+				# Add repo to target /etc/pacman.conf
+				with target_pacman_conf.open("a+") as f:
+					f.seek(0)
+					content = f.read()
+					if "[archzfs]" not in content:
+						# Use the repo URL from your ISO build (or standard one if consistent)
+						f.write("\n[archzfs]\nServer = https://archzfs.com/$repo/$arch\n") # Using standard URL, adjust if your ISO uses experimental
+
+				# Initialize and trust key on target system
+				info("Initializing pacman keyring and trusting ArchZFS key on target...")
+				self.arch_chroot(["pacman-key", "--init"])
+				# Optionally populate archlinux keys first if default keyring is empty
+				# self.arch_chroot(["pacman-key", "--populate", "archlinux"])
+				self.arch_chroot(["pacman-key", "--recv-keys", "F75D9D76"])
+				self.arch_chroot(["pacman-key", "--lsign-key", "F75D9D76"])
+				info("Syncing package database on target system...")
+				self.arch_chroot(["pacman", "-Syy"])
+			except Exception as e:
+				warn(f"Failed to configure ArchZFS repository on target system: {e}")
+				warn("ZFS updates on the installed system may fail.")
+		# == End ZFS Post-Install ==
 
 		# Periodic TRIM may improve the performance and longevity of SSDs whilst
 		# having no adverse effect on other devices. Most distributions enable
