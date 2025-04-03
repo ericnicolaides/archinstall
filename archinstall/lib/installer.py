@@ -873,55 +873,55 @@ class Installer:
 	):
 		# Add ZFS packages if needed
 		if self._has_zfs_config():
-			# Set up archzfs repository before adding ZFS packages
-			info("Setting up archzfs repository...")
+			# Set up archzfs repository before pacstrap
+			info("Setting up archzfs repository for live environment...")
 			
-			# Create necessary target directories
-			target_etc = self.target / 'etc'
-			target_etc.mkdir(parents=True, exist_ok=True)
-			
-			# Copy the base pacman.conf if it doesn't exist
-			target_pacman_conf = target_etc / 'pacman.conf'
-			if not target_pacman_conf.exists():
-				shutil.copy('/etc/pacman.conf', target_pacman_conf)
-			
-			# Add archzfs repository to pacman.conf in both live and target environments
-			for conf_path in ["/etc/pacman.conf", target_pacman_conf]:
-				with open(conf_path, "r") as f:
-					content = f.read()
-					
+			# 1. Add repo to live environment /etc/pacman.conf
+			live_pacman_conf = Path("/etc/pacman.conf")
+			with live_pacman_conf.open("a+") as f:
+				f.seek(0)
+				content = f.read()
 				if "[archzfs]" not in content:
-					with open(conf_path, "a") as f:
-						f.write("\n[archzfs]\n")
-						f.write("Server = https://archzfs.com/$repo/$arch\n")
+					f.write("\n[archzfs]\n")
+					f.write("Server = https://archzfs.com/$repo/$arch\n")
 			
-			# Initialize pacman keyring directory structure in target
-			target_pacman_dir = target_etc / 'pacman.d'
-			target_pacman_dir.mkdir(parents=True, exist_ok=True)
-			(target_pacman_dir / 'gnupg').mkdir(parents=True, exist_ok=True)
-			
-			# Import and sign the archzfs key in both live and target environments
+			# 2. Import and sign key in live environment
 			try:
 				info("Importing and signing archzfs key in live environment...")
 				SysCommand(["pacman-key", "--recv-keys", "F75D9D76"])
 				SysCommand(["pacman-key", "--lsign-key", "F75D9D76"])
 				
-				info("Importing and signing archzfs key in target environment...")
-				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--init"])
-				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--populate", "archlinux"])
-				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--recv-keys", "F75D9D76"])
-				SysCommand(["arch-chroot", str(self.target), "pacman-key", "--lsign-key", "F75D9D76"])
-				
-				# Update package database in both environments
-				info("Updating package databases...")
+				# 3. Sync database in live environment
+				info("Updating live package database...")
 				SysCommand(["pacman", "-Syy"])
-				SysCommand(["arch-chroot", str(self.target), "pacman", "-Syy"])
 			except Exception as e:
-				warn(f"Failed to set up archzfs repository: {e}")
-				warn("Installation may fail if ZFS packages cannot be found")
+				warn(f"Failed to set up archzfs repository in live environment: {e}")
+				warn("Installation may fail if ZFS packages cannot be found by pacstrap")
 			
+			# 4. Ensure target /etc directory exists
+			target_etc = self.target / 'etc'
+			target_etc.mkdir(parents=True, exist_ok=True)
+			
+			# 5. Copy the (potentially updated) live pacman.conf to target for pacstrap
+			target_pacman_conf = target_etc / 'pacman.conf'
+			try:
+				info(f"Copying /etc/pacman.conf to {target_pacman_conf}")
+				shutil.copy(live_pacman_conf, target_pacman_conf)
+			except Exception as e:
+				warn(f"Failed to copy pacman.conf to target: {e}")
+				# Attempt to create the target pacman.conf manually if copy failed
+				if not target_pacman_conf.exists():
+					try:
+						target_pacman_conf.write_text(live_pacman_conf.read_text())
+					except Exception as write_e:
+						error(f"Could not create target pacman.conf: {write_e}")
+						# Cannot proceed without pacman.conf for pacstrap
+						raise RequirementError("Failed to prepare pacman.conf for target system.") from write_e
+			
+			# 6. Add ZFS packages to the list for pacstrap
 			self._base_packages.extend(['zfs-dkms', 'zfs-utils', 'linux-headers'])
-			# Add zfs hook for mkinitcpio
+			
+			# 7. Add zfs hook for mkinitcpio (will be configured after pacstrap)
 			if 'zfs' not in self._hooks:
 				self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
 

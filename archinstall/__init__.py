@@ -16,6 +16,7 @@ from .lib.pacman import Pacman
 from .lib.plugins import load_plugin, plugins
 from .lib.translationhandler import DeferredTranslation, Language, translation_handler
 from .tui.curses_menu import Tui
+from .lib.general import SysCallError
 
 if TYPE_CHECKING:
 	from collections.abc import Callable
@@ -66,19 +67,19 @@ def _check_new_version() -> None:
 	info("Checking version...")
 	
 	try:
-		# First check if archinstall is installed as a package
+		# This inner try specifically handles the Pacman call
 		try:
 			upgrade = Pacman.run("-Qu archinstall").decode()
 			if upgrade:
 				text = f'New version available: {upgrade}'
 				info(text)
 				time.sleep(3)
-		except Exception as e:
-			# If package not found, we're likely running from source
-			debug('Running from source/development version')
-			
+		except SysCallError:
+			# If Pacman.run fails with SysCallError, assume package not found (running from source)
+			debug('Running from source/development version or package not installed.')
+		# This outer except handles any other errors during the version check process
 	except Exception as e:
-		debug(f'Failed to determine version: {e}')
+		warn(f'Could not check for new version: {e}')
 
 
 def main() -> None:
