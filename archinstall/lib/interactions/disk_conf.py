@@ -28,8 +28,8 @@ from archinstall.lib.models.device_model import (
 	_DeviceInfo,
 	DiskEncryption,
 	EncryptionType,
-	User,
 )
+from archinstall.lib.models.users import User
 from archinstall.lib.output import debug, error, info, warn
 from archinstall.tui.curses_menu import SelectMenu
 from archinstall.tui.menu_item import MenuItem, MenuItemGroup
