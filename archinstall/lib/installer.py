@@ -750,19 +750,6 @@ class Installer:
 				quoted_cmd_str = shlex.join(cmd)
 			else: # cmd is already a string
 				quoted_cmd_str = shlex.quote(cmd)
-			
-			# Construct the su command string
-			cmd_str = f"su - {run_as} -c {quoted_cmd_str}"
-			# run_command will receive a string, split it, and prepend arch-chroot
-			# This might not be exactly right for su -c, as arch-chroot should wrap the su command.
-			# Let's rethink the run_as logic. It should probably execute arch-chroot first,
-			# then su within the chroot.
-
-			# Revised run_as logic: Build the command list for arch-chroot to run 'su'
-			if isinstance(cmd, list):
-				quoted_cmd_str = shlex.join(cmd) # Command for su -c needs joining
-			else:
-				quoted_cmd_str = cmd # Assume simple string doesn't need extra quoting here? Risky. Better to quote.
 				quoted_cmd_str = shlex.quote(cmd)
 
 			# The command to run inside chroot: su - user -c '...'
@@ -919,6 +906,11 @@ class Installer:
 			# Add zfs hook for mkinitcpio (will be configured after pacstrap)
 			if 'zfs' not in self._hooks:
 				self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
+				
+			# Ensure zfs module is added
+			if 'zfs' not in self._modules:
+				info("Adding 'zfs' to kernel modules list for mkinitcpio")
+				self._modules.append('zfs')
 
 		if self._disk_config.lvm_config:
 			lvm = 'lvm2'
@@ -1002,9 +994,26 @@ class Installer:
 			# 2. Now attempt to install ZFS packages using the configured repo
 			info("Installing ZFS DKMS packages onto target system...")
 			try:
+				# First ensure cache directory exists and is writable
+				cache_dir = self.target / 'var/cache/pacman/pkg'
+				cache_dir.mkdir(parents=True, exist_ok=True)
+				
+				# Check if we have a mounted dataset for /var/cache/pacman
+				try:
+					mount_output = SysCommand("mount").decode()
+					if not any(f"on {self.target}/var/cache/pacman " in line for line in mount_output.splitlines()):
+						warn("Warning: No dedicated ZFS dataset mounted for /var/cache/pacman")
+						# Try to create a tmpfs as fallback to ensure we have space
+						SysCommand(f"mount -t tmpfs -o size=4G tmpfs {self.target}/var/cache/pacman/pkg")
+						info("Created temporary filesystem for package downloads")
+				except Exception as mount_err:
+					warn(f"Failed to create temporary filesystem: {mount_err}")
+				
 				# Install dkms variant and utils. Headers were installed by pacstrap.
 				# Use --needed to avoid reinstalling headers if base included them
+				info("Running pacman to install ZFS packages...")
 				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"], peek_output=True)
+				info("ZFS packages successfully installed")
 			except Exception as e:
 				# Simplify error logging: Use the string representation of the exception
 				detail = str(e)

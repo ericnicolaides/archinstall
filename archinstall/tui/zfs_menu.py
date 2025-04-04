@@ -74,7 +74,9 @@ class ZFSMenu:
                 ).input()
                 
                 if result.type_ == ResultType.Selection and result.text():
+                    old_value = storage.get('zfs_pool_name')
                     storage['zfs_pool_name'] = result.text()
+                    info(f"ZFS pool name changed from '{old_value}' to '{result.text()}'")
             
             elif selected_option == 'Compression':
                 # Create a simple menu for compression options

@@ -19,11 +19,19 @@ class ZFSManager:
     
     def __init__(self):
         # Get configuration from storage or use defaults
-        self._pool_name = storage.get('zfs_pool_name', "ROOT")
+        raw_pool_name = storage.get('zfs_pool_name')
+        self._pool_name = raw_pool_name if raw_pool_name else "ROOT"
         self._compression = storage.get('zfs_compression', "lz4")
         self._boot_environment = storage.get('zfs_boot_environment', "default")
         self._enable_encryption = storage.get('zfs_encryption', False)
         self._encryption_password = storage.get('zfs_encryption_password', '')
+        
+        # Log configuration for debugging
+        info(f"ZFS Manager initialized with:")
+        info(f"- Pool name: {self._pool_name} (from storage: {raw_pool_name})")
+        info(f"- Boot environment: {self._boot_environment}")
+        info(f"- Compression: {self._compression}")
+        info(f"- Encryption enabled: {self._enable_encryption}")
         
     def create_pool(self, devices: list[str], ashift: int = 12) -> bool:
         """Create a ZFS pool with the specified devices"""
@@ -55,34 +63,47 @@ class ZFSManager:
     def create_datasets(self) -> bool:
         """Create basic ZFS datasets structure"""
         try:
+            # Log the pool name being used
+            info(f"ZFS: Creating datasets using pool name: {self._pool_name}")
+            
             # Create root dataset structure
+            info(f"ZFS: Creating base ROOT dataset structure")
             SysCommand(["zfs", "create", "-o", "mountpoint=none", f"{self._pool_name}/ROOT"])
             
             # Create the boot environment
+            info(f"ZFS: Creating boot environment dataset: {self._pool_name}/ROOT/{self._boot_environment}")
             SysCommand(["zfs", "create",
                 "-o", "mountpoint=/",
                 "-o", "canmount=noauto",
                 "-o", f"compression={self._compression}",
                 f"{self._pool_name}/ROOT/{self._boot_environment}"])
             
-            # Create other common datasets
-            common_datasets = [
-                ["zfs", "create", "-o", "mountpoint=/home", f"{self._pool_name}/home"],
-                ["zfs", "create", "-o", "mountpoint=/var", f"{self._pool_name}/var"],
-                ["zfs", "create", "-o", "mountpoint=/var/lib", f"{self._pool_name}/var/lib"],
-                ["zfs", "create", "-o", "mountpoint=/var/log", f"{self._pool_name}/var/log"],
-                ["zfs", "create", "-o", "mountpoint=/var/cache", f"{self._pool_name}/var/cache"],
-                ["zfs", "create", "-o", "mountpoint=/var/cache/pacman", f"{self._pool_name}/var/cache/pacman"],
-                ["zfs", "create", "-o", "mountpoint=/tmp", f"{self._pool_name}/tmp"],
+            # Create other datasets one by one with EXPLICIT error handling for each
+            # This ensures one failing dataset doesn't prevent others from being created
+            datasets = [
+                ["/home", f"{self._pool_name}/home"],
+                ["/var", f"{self._pool_name}/var"],
+                ["/var/lib", f"{self._pool_name}/var/lib"],
+                ["/var/log", f"{self._pool_name}/var/log"],
+                ["/var/cache", f"{self._pool_name}/var/cache"],
+                ["/var/cache/pacman", f"{self._pool_name}/var/cache/pacman"],
+                ["/var/cache/pacman/pkg", f"{self._pool_name}/var/cache/pacman/pkg"],
+                ["/tmp", f"{self._pool_name}/tmp"]
             ]
             
-            for cmd in common_datasets:
-                SysCommand(cmd)
-                
-            info("ZFS datasets created successfully")
+            for mountpoint, dataset in datasets:
+                try:
+                    info(f"ZFS: Creating dataset {dataset} with mountpoint {mountpoint}")
+                    SysCommand(["zfs", "create", "-o", f"mountpoint={mountpoint}", dataset])
+                    info(f"ZFS: Successfully created dataset {dataset}")
+                except Exception as e:
+                    error(f"ZFS: Error creating dataset {dataset}: {e}")
+                    # Continue to create other datasets even if one fails
+            
+            info("ZFS: All datasets creation attempts completed")
             return True
         except Exception as e:
-            error(f"Error creating ZFS datasets: {e}")
+            error(f"ZFS: Major error in dataset creation process: {e}")
             return False
 
     def setup_encryption(self) -> bool:
