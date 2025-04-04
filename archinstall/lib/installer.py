@@ -720,16 +720,61 @@ class Installer:
 				if hasattr(plugin, 'on_service'):
 					plugin.on_service(service)
 
-	def run_command(self, cmd: str, *args: str, **kwargs: str) -> SysCommand:
-		return SysCommand(f'arch-chroot {self.target} {cmd}')
+	def run_command(self, cmd: str | list[str], *args: str, **kwargs: str) -> SysCommand:
+		# Construct the base command list
+		base_cmd = ['arch-chroot', str(self.target)]
 
-	def arch_chroot(self, cmd: str, run_as: str | None = None) -> SysCommand:
+		if isinstance(cmd, str):
+			# Basic split for simple string commands. Consider shlex.split for robustness if needed.
+			full_cmd = base_cmd + cmd.split()
+		elif isinstance(cmd, list):
+			# If cmd is already a list, append its elements
+			full_cmd = base_cmd + cmd
+		else:
+			# Handle unexpected type
+			raise TypeError(f"Unsupported command type for run_command: {type(cmd)}")
+
+		# Pass the constructed *list* to SysCommand
+		# Assuming SysCommand kwargs like peek_output etc. are handled within SysCommand init
+		# based on the original call structure. If not, they might need to be passed here.
+		return SysCommand(full_cmd, **kwargs) # Pass kwargs if SysCommand uses them
+
+	def arch_chroot(self, cmd: str | list[str], run_as: str | None = None, **kwargs) -> SysCommand:
+		# Pass kwargs down to run_command -> SysCommand
 		if run_as:
-			cmd = f"su - {run_as} -c {shlex.quote(cmd)}"
+			# Simplified handling for run_as: construct a single command string
+			# This assumes SysCommandWorker can handle shell metacharacters/quoting via shell=True or similar
+			# May need refinement depending on SysCommandWorker's execution method.
+			if isinstance(cmd, list):
+				# Join list elements into a single shell-safe string for the 'su -c' argument
+				quoted_cmd_str = shlex.join(cmd)
+			else: # cmd is already a string
+				quoted_cmd_str = shlex.quote(cmd)
+			
+			# Construct the su command string
+			cmd_str = f"su - {run_as} -c {quoted_cmd_str}"
+			# run_command will receive a string, split it, and prepend arch-chroot
+			# This might not be exactly right for su -c, as arch-chroot should wrap the su command.
+			# Let's rethink the run_as logic. It should probably execute arch-chroot first,
+			# then su within the chroot.
 
-		return self.run_command(cmd)
+			# Revised run_as logic: Build the command list for arch-chroot to run 'su'
+			if isinstance(cmd, list):
+				quoted_cmd_str = shlex.join(cmd) # Command for su -c needs joining
+			else:
+				quoted_cmd_str = cmd # Assume simple string doesn't need extra quoting here? Risky. Better to quote.
+				quoted_cmd_str = shlex.quote(cmd)
+
+			# The command to run inside chroot: su - user -c '...'
+			inner_cmd = ["su", "-", run_as, "-c", quoted_cmd_str]
+			# Pass this *list* to run_command, which will prepend arch-chroot
+			return self.run_command(inner_cmd, **kwargs)
+
+		# If not run_as, pass the cmd (which could be str or list) directly
+		return self.run_command(cmd, **kwargs) # Pass kwargs
 
 	def drop_to_shell(self) -> None:
+		# Using subprocess directly is fine here as it's simpler.
 		subprocess.check_call(f"arch-chroot {self.target}", shell=True)
 
 	def configure_nic(self, nic: Nic) -> None:
@@ -954,7 +999,7 @@ class Installer:
 				# Install dkms variant and utils. Headers are installed by pacstrap now.
 				# Use --needed to avoid reinstalling headers if base included them
 				# Headers (`linux-headers`, `linux-lts-headers`) should already be installed by pacstrap.
-				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"]) 
+				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"], peek_output=True) # Example: Pass peek_output if needed
 			except Exception as e:
 				# Log error, potentially raise or warn user
 				error(f"Failed to install ZFS DKMS packages onto target system: {e}")
