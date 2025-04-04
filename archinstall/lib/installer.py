@@ -843,36 +843,12 @@ class Installer:
 
 		return True
 
-	def mkinitcpio(self, flags: list[str]) -> bool:
-		for plugin in plugins.values():
-			if hasattr(plugin, 'on_mkinitcpio'):
-				# Allow plugins to override the usage of mkinitcpio altogether.
-				if plugin.on_mkinitcpio(self):
-					return True
-
-		with open(f'{self.target}/etc/mkinitcpio.conf', 'r+') as mkinit:
-			content = mkinit.read()
-			content = re.sub("\nMODULES=(.*)", f"\nMODULES=({' '.join(self._modules)})", content)
-			content = re.sub("\nBINARIES=(.*)", f"\nBINARIES=({' '.join(self._binaries)})", content)
-			content = re.sub("\nFILES=(.*)", f"\nFILES=({' '.join(self._files)})", content)
-
-			if not self._disk_encryption.hsm_device:
-				# For now, if we don't use HSM we revert to the old
-				# way of setting up encryption hooks for mkinitcpio.
-				# This is purely for stability reasons, we're going away from this.
-				# * systemd -> udev
-				# * sd-vconsole -> keymap
-				self._hooks = [hook.replace('systemd', 'udev').replace('sd-vconsole', 'keymap consolefont') for hook in self._hooks]
-
-			content = re.sub("\nHOOKS=(.*)", f"\nHOOKS=({' '.join(self._hooks)})", content)
-			mkinit.seek(0)
-			mkinit.write(content)
-
+	def mkinitcpio(self, flags=[]) -> bool:
 		try:
 			SysCommand(f'arch-chroot {self.target} mkinitcpio {" ".join(flags)}', peek_output=True)
 			return True
 		except SysCallError as e:
-			if e.worker_log:
+			if hasattr(e, 'worker_log') and e.worker_log:
 				log(e.worker_log.decode())
 			return False
 

@@ -71,6 +71,9 @@ class ZFSManager:
                 ["zfs", "create", "-o", "mountpoint=/var", f"{self._pool_name}/var"],
                 ["zfs", "create", "-o", "mountpoint=/var/lib", f"{self._pool_name}/var/lib"],
                 ["zfs", "create", "-o", "mountpoint=/var/log", f"{self._pool_name}/var/log"],
+                ["zfs", "create", "-o", "mountpoint=/var/cache", f"{self._pool_name}/var/cache"],
+                ["zfs", "create", "-o", "mountpoint=/var/cache/pacman", f"{self._pool_name}/var/cache/pacman"],
+                ["zfs", "create", "-o", "mountpoint=/tmp", f"{self._pool_name}/tmp"],
             ]
             
             for cmd in common_datasets:
