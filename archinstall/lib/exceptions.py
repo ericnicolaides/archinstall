@@ -16,6 +16,8 @@ class SysCallError(Exception):
 		self.message = message
 		self.exit_code = exit_code
 		self.worker_log = worker_log
+		self.worker = None  # Add worker attribute to prevent AttributeError when it's accessed
+		self.session = None  # Add session attribute to prevent AttributeError when it's accessed
 
 
 class HardwareIncompatibilityError(Exception):

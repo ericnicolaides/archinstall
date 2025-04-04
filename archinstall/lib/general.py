@@ -479,3 +479,12 @@ def _pid_exists(pid: int) -> bool:
 def secret(x: str) -> str:
 	""" return * with len equal to to the input string """
 	return '*' * len(x)
+
+
+class SysCallError(Exception):
+	def __init__(self, message: str, exit_code: int | None = None, worker_log: bytes = b'') -> None:
+		super().__init__(message)
+		self.message = message
+		self.exit_code = exit_code
+		self.worker_log = worker_log
+		self.worker = None  # Add worker attribute to prevent AttributeError

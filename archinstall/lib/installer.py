@@ -166,6 +166,29 @@ class Installer:
 		"""Check if ZFS configuration is present in storage"""
 		return 'zfs_pool_name' in storage
 		
+	def _check_disk_space(self, min_space_mb: int = 1024) -> bool:
+		"""
+		Check if there's enough disk space available in the target system
+		Returns True if enough space, False otherwise
+		"""
+		try:
+			# Use df to check available space on target filesystem
+			df_cmd = f"df -m {self.target}/var/cache/pacman/pkg | tail -1 | awk '{{print $4}}'"
+			space_output = SysCommand(df_cmd).decode().strip()
+			
+			# Try to parse output as integer - available space in MB
+			available_mb = int(space_output)
+			info(f"Available space for package installation: {available_mb}MB")
+			
+			if available_mb < min_space_mb:
+				warn(f"Low disk space warning: Only {available_mb}MB available, need {min_space_mb}MB")
+				return False
+				
+			return True
+		except Exception as e:
+			warn(f"Failed to check disk space: {e}")
+			return False  # Assume not enough space to be safe
+
 	def _setup_archzfs_repo(self) -> bool:
 		"""
 		Setup the ArchZFS repository in the target system.
@@ -194,6 +217,11 @@ class Installer:
 			# Sync package database
 			info("Syncing package database on target system (including archzfs)...")
 			self.arch_chroot(["pacman", "-Syy", "--noconfirm"])
+			
+			# Check disk space after syncing databases
+			if not self._check_disk_space(2048):  # Require at least 2GB free
+				warn("Warning: Low disk space for ZFS package installation - installation may fail")
+				
 			return True
 		except Exception as e:
 			error(f"Failed to configure ArchZFS repository: {e}")
@@ -216,9 +244,10 @@ class Installer:
 				warn("Warning: No dedicated ZFS dataset mounted for /var/cache/pacman")
 				
 				# Try to create a tmpfs as fallback to ensure we have space
-				tmpfs_cmd = f"mount -t tmpfs -o size=4G tmpfs {self.target}/var/cache/pacman/pkg"
+				# Increased from 4G to 8G to accommodate multiple kernel builds
+				tmpfs_cmd = f"mount -t tmpfs -o size=8G,mode=1755 tmpfs {self.target}/var/cache/pacman/pkg"
 				SysCommand(tmpfs_cmd)
-				info("Created temporary filesystem for package downloads")
+				info("Created temporary filesystem (8GB) for package downloads")
 				
 			return True
 		except Exception as e:
@@ -941,145 +970,167 @@ class Installer:
 		hostname: str | None = None,
 		locale_config: LocaleConfiguration | None = LocaleConfiguration.default()
 	):
-		# Note: User-selected kernels and headers were added to _base_packages in __init__
+		# Add global try-except to handle errors more gracefully
+		try:
+			# Note: User-selected kernels and headers were added to _base_packages in __init__
 
-		# If ZFS is configured, ensure the hook is added for mkinitcpio later
-		# AND ensure at least linux and linux-lts kernels+headers are present as fallbacks.
-		if self._has_zfs_config():
-			info("ZFS configuration detected. Ensuring fallback kernels and ZFS hook are included.")
-			
-			# Verify ZFS configuration is properly set with defaults
-			ensure_zfs_config_defaults()
-			
-			# Ensure linux (stable) kernel and headers are present
-			if 'linux' not in self._base_packages:
-				self._base_packages.append('linux')
-			if 'linux-headers' not in self._base_packages:
-				self._base_packages.append('linux-headers')
-			
-			# Ensure linux-lts kernel and headers are present
-			if 'linux-lts' not in self._base_packages:
-				self._base_packages.append('linux-lts')
-			if 'linux-lts-headers' not in self._base_packages:
-				self._base_packages.append('linux-lts-headers')
-			
-			# Add zfs hook for mkinitcpio (will be configured after pacstrap)
-			if 'zfs' not in self._hooks:
-				self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
+			# If ZFS is configured, ensure the hook is added for mkinitcpio later
+			# AND ensure at least linux and linux-lts kernels+headers are present as fallbacks.
+			if self._has_zfs_config():
+				info("ZFS configuration detected. Ensuring fallback kernels and ZFS hook are included.")
 				
-			# Ensure zfs module is added
-			if 'zfs' not in self._modules:
-				info("Adding 'zfs' to kernel modules list for mkinitcpio")
-				self._modules.append('zfs')
-
-		if self._disk_config.lvm_config:
-			lvm = 'lvm2'
-			self.add_additional_packages(lvm)
-			self._hooks.insert(self._hooks.index('filesystems') - 1, lvm)
-
-			for vg in self._disk_config.lvm_config.vol_groups:
-				for vol in vg.volumes:
-					if vol.fs_type is not None:
-						self._prepare_fs_type(vol.fs_type, vol.mountpoint)
-
-			types = (EncryptionType.LvmOnLuks, EncryptionType.LuksOnLvm)
-			if self._disk_encryption.encryption_type in types:
-				self._prepare_encrypt(lvm)
-		else:
-			for mod in self._disk_config.device_modifications:
-				for part in mod.partitions:
-					if part.fs_type is None:
-						continue
-
-					self._prepare_fs_type(part.fs_type, part.mountpoint)
-
-					if part in self._disk_encryption.partitions:
-						self._prepare_encrypt()
-
-		if ucode := self._get_microcode():
-			(self.target / 'boot' / ucode).unlink(missing_ok=True)
-			self._base_packages.append(ucode.stem)
-		else:
-			debug('Archinstall will not install any ucode.')
-
-		debug(f'Optional repositories: {optional_repositories}')
-
-		# This action takes place on the host system as pacstrap copies over package repository lists.
-		pacman_conf = Config(self.target)
-		pacman_conf.enable(optional_repositories)
-		pacman_conf.apply()
-
-		# Remove the specific ZFS pacman.conf copying logic - it's redundant/handled by ISO.
-		# if self._has_zfs_config():
-		# 	info("Copying archzfs repository configuration to target system...")
-		# 	...
-
-		self.pacman.strap(self._base_packages) 
-		self.helper_flags['base-strapped'] = True
-
-		pacman_conf.persist()
-
-		# == ZFS Post-Install Configuration ==
-		# Configure repo and install ZFS DKMS packages on the target system AFTER pacstrap
-		if self._has_zfs_config():
-			# 1. Configure ArchZFS repository on target system FIRST
-			if not self._setup_archzfs_repo():
-				raise RequirementError("Failed to configure ArchZFS repository on target.")
+				# Verify ZFS configuration is properly set with defaults
+				ensure_zfs_config_defaults()
 				
-			# 2. Prepare pacman cache directories for package installation
-			self._prepare_pacman_cache()
+				# Ensure linux (stable) kernel and headers are present
+				if 'linux' not in self._base_packages:
+					self._base_packages.append('linux')
+				if 'linux-headers' not in self._base_packages:
+					self._base_packages.append('linux-headers')
+				
+				# Ensure linux-lts kernel and headers are present
+				if 'linux-lts' not in self._base_packages:
+					self._base_packages.append('linux-lts')
+				if 'linux-lts-headers' not in self._base_packages:
+					self._base_packages.append('linux-lts-headers')
+				
+				# Add zfs hook for mkinitcpio (will be configured after pacstrap)
+				if 'zfs' not in self._hooks:
+					self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
+					
+				# Ensure zfs module is added
+				if 'zfs' not in self._modules:
+					info("Adding 'zfs' to kernel modules list for mkinitcpio")
+					self._modules.append('zfs')
 
-			# 3. Now attempt to install ZFS packages using the configured repo
-			info("Installing ZFS DKMS packages onto target system...")
-			try:
-				# Install dkms variant and utils. Headers were installed by pacstrap.
-				info("Running pacman to install ZFS packages...")
-				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"], peek_output=True)
-				info("ZFS packages successfully installed")
-			except Exception as e:
-				error(f"Failed to install ZFS DKMS packages onto target system: {e}")
-				# If this fails now, it's likely a genuine download issue or conflict
-				raise RequirementError("Failed to install essential ZFS packages on target.") from e
+			if self._disk_config.lvm_config:
+				lvm = 'lvm2'
+				self.add_additional_packages(lvm)
+				self._hooks.insert(self._hooks.index('filesystems') - 1, lvm)
 
-		# == End ZFS Post-Install ==
+				for vg in self._disk_config.lvm_config.vol_groups:
+					for vol in vg.volumes:
+						if vol.fs_type is not None:
+							self._prepare_fs_type(vol.fs_type, vol.mountpoint)
 
-		# Periodic TRIM may improve the performance and longevity of SSDs whilst
-		# having no adverse effect on other devices. Most distributions enable
-		# periodic TRIM by default.
-		#
-		# https://github.com/archlinux/archinstall/issues/880
-		# https://github.com/archlinux/archinstall/issues/1837
-		# https://github.com/archlinux/archinstall/issues/1841
-		if not self._disable_fstrim:
-			self.enable_periodic_trim()
+				types = (EncryptionType.LvmOnLuks, EncryptionType.LuksOnLvm)
+				if self._disk_encryption.encryption_type in types:
+					self._prepare_encrypt(lvm)
+			else:
+				for mod in self._disk_config.device_modifications:
+					for part in mod.partitions:
+						if part.fs_type is None:
+							continue
 
-		# TODO: Support locale and timezone
-		# os.remove(f'{self.target}/etc/localtime')
-		# sys_command(f'arch-chroot {self.target} ln -s /usr/share/zoneinfo/{localtime} /etc/localtime')
-		# sys_command('arch-chroot /mnt hwclock --hctosys --localtime')
-		if hostname:
-			self.set_hostname(hostname)
+						self._prepare_fs_type(part.fs_type, part.mountpoint)
 
-		if locale_config:
-			self.set_locale(locale_config)
-			self.set_keyboard_language(locale_config.kb_layout)
+						if part in self._disk_encryption.partitions:
+							self._prepare_encrypt()
 
-		# TODO: Use python functions for this
-		SysCommand(f'arch-chroot {self.target} chmod 700 /root')
+			if ucode := self._get_microcode():
+				(self.target / 'boot' / ucode).unlink(missing_ok=True)
+				self._base_packages.append(ucode.stem)
+			else:
+				debug('Archinstall will not install any ucode.')
 
-		if mkinitcpio and not self.mkinitcpio(['-P']):
-			error('Error generating initramfs (continuing anyway)')
+			debug(f'Optional repositories: {optional_repositories}')
 
-		self.helper_flags['base'] = True
+			# This action takes place on the host system as pacstrap copies over package repository lists.
+			pacman_conf = Config(self.target)
+			pacman_conf.enable(optional_repositories)
+			pacman_conf.apply()
 
-		# Run registered post-install hooks
-		for function in self.post_base_install:
-			info(f"Running post-installation hook: {function}")
-			function(self)
+			# Remove the specific ZFS pacman.conf copying logic - it's redundant/handled by ISO.
+			# if self._has_zfs_config():
+			# 	info("Copying archzfs repository configuration to target system...")
+			# 	...
 
-		for plugin in plugins.values():
-			if hasattr(plugin, 'on_install'):
-				plugin.on_install(self)
+			self.pacman.strap(self._base_packages) 
+			self.helper_flags['base-strapped'] = True
+
+			pacman_conf.persist()
+
+			# == ZFS Post-Install Configuration ==
+			# Configure repo and install ZFS DKMS packages on the target system AFTER pacstrap
+			if self._has_zfs_config():
+				# 1. Configure ArchZFS repository on target system FIRST
+				if not self._setup_archzfs_repo():
+					raise RequirementError("Failed to configure ArchZFS repository on target.")
+					
+				# 2. Prepare pacman cache directories for package installation
+				self._prepare_pacman_cache()
+
+				# 3. Now attempt to install ZFS packages using the configured repo
+				info("Installing ZFS DKMS packages onto target system...")
+				try:
+					# Install packages one at a time to avoid filling the cache
+					info("Installing zfs-utils package...")
+					self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-utils"], peek_output=True)
+					
+					# Clean package cache before installing the next package to free up space
+					info("Cleaning package cache before installing zfs-dkms...")
+					try:
+						self.arch_chroot(["find", "/var/cache/pacman/pkg", "-name", "*.tar.zst", "-delete"], peek_output=False)
+					except Exception as cache_error:
+						warn(f"Failed to clean package cache: {cache_error} - continuing anyway")
+					
+					info("Installing zfs-dkms package...")
+					self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms"], peek_output=True)
+					
+					info("ZFS packages successfully installed")
+				except Exception as e:
+					error(f"Failed to install ZFS DKMS packages onto target system: {e}")
+					# If this fails now, it's likely a genuine download issue or conflict
+					raise RequirementError("Failed to install essential ZFS packages on target.") from e
+
+			# == End ZFS Post-Install ==
+
+			# Periodic TRIM may improve the performance and longevity of SSDs whilst
+			# having no adverse effect on other devices. Most distributions enable
+			# periodic TRIM by default.
+			#
+			# https://github.com/archlinux/archinstall/issues/880
+			# https://github.com/archlinux/archinstall/issues/1837
+			# https://github.com/archlinux/archinstall/issues/1841
+			if not self._disable_fstrim:
+				self.enable_periodic_trim()
+
+			# TODO: Support locale and timezone
+			# os.remove(f'{self.target}/etc/localtime')
+			# sys_command(f'arch-chroot {self.target} ln -s /usr/share/zoneinfo/{localtime} /etc/localtime')
+			# sys_command('arch-chroot /mnt hwclock --hctosys --localtime')
+			if hostname:
+				self.set_hostname(hostname)
+
+			if locale_config:
+				self.set_locale(locale_config)
+				self.set_keyboard_language(locale_config.kb_layout)
+
+			# TODO: Use python functions for this
+			SysCommand(f'arch-chroot {self.target} chmod 700 /root')
+
+			if mkinitcpio and not self.mkinitcpio(['-P']):
+				error('Error generating initramfs (continuing anyway)')
+
+			self.helper_flags['base'] = True
+
+			# Run registered post-install hooks
+			for function in self.post_base_install:
+				info(f"Running post-installation hook: {function}")
+				function(self)
+
+			for plugin in plugins.values():
+				if hasattr(plugin, 'on_install'):
+					plugin.on_install(self)
+
+		except Exception as e:
+			error(f"Error during installation: {str(e)}")
+			if hasattr(e, 'worker_log') and e.worker_log:
+				try:
+					log(e.worker_log.decode())
+				except Exception:
+					log("Could not decode worker log")
+			raise e  # Re-raise the exception after logging
 
 	def setup_swap(self, kind: str = 'zram') -> None:
 		if kind == 'zram':
