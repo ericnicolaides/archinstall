@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Dict, List, Any
 
 from archinstall.lib.args import arch_config_handler
 from archinstall.lib.disk.device_handler import device_handler
@@ -26,8 +26,11 @@ from archinstall.lib.models.device_model import (
 	SubvolumeModification,
 	Unit,
 	_DeviceInfo,
+	DiskEncryption,
+	EncryptionType,
+	User,
 )
-from archinstall.lib.output import debug
+from archinstall.lib.output import debug, error, info, warn
 from archinstall.tui.curses_menu import SelectMenu
 from archinstall.tui.menu_item import MenuItem, MenuItemGroup
 from archinstall.tui.types import Alignment, FrameProperties, Orientation, PreviewStyle, ResultType
@@ -35,6 +38,7 @@ from archinstall.tui.types import Alignment, FrameProperties, Orientation, Previ
 from ..output import FormattedOutput
 from ..utils.util import prompt_dir
 from ..storage import storage
+from archinstall.lib.zfs import ensure_zfs_config_defaults
 
 if TYPE_CHECKING:
 	from collections.abc import Callable
@@ -677,20 +681,17 @@ def suggest_zfs_layout(device: BDevice) -> DeviceModification:
 	"""
 	Create a suggested ZFS layout with proper boot partition
 	"""
-	from ..storage import storage
+	# Ensure ZFS defaults are set in storage
+	ensure_zfs_config_defaults()
 	
-	# If ZFS is selected but no ZFS config done yet, initialize with defaults and show config menu
-	if not storage.get('zfs_pool_name'):
-		storage['zfs_pool_name'] = 'ROOT'
-		storage['zfs_compression'] = 'lz4'
-		storage['zfs_boot_environment'] = 'default'
-		storage['zfs_encryption'] = False
-		storage['zfs_encryption_password'] = ''
+	# Add default boot strategy if not present
+	if 'zfs_boot_strategy' not in storage:
 		storage['zfs_boot_strategy'] = 'zfs_boot'  # Default to ZFS boot
-		
-		from archinstall.tui.zfs_menu import ZFSMenu
-		ZFSMenu().show()
-		
+	
+	# Show ZFS menu to let user configure ZFS options
+	from archinstall.tui.zfs_menu import ZFSMenu
+	ZFSMenu().show()
+	
 	sector_size = device.device_info.sector_size
 	total_size = device.device_info.total_size
 	available_space = total_size

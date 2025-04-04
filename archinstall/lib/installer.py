@@ -30,7 +30,7 @@ from archinstall.lib.models.device_model import (
 from archinstall.lib.models.packages import Repository
 from archinstall.tui.curses_menu import Tui
 
-from .zfs import zfs_manager
+from .zfs import zfs_manager, ensure_zfs_config_defaults
 
 from .args import arch_config_handler
 from .exceptions import DiskError, HardwareIncompatibilityError, RequirementError, ServiceException, SysCallError
@@ -165,6 +165,66 @@ class Installer:
 	def _has_zfs_config(self) -> bool:
 		"""Check if ZFS configuration is present in storage"""
 		return 'zfs_pool_name' in storage
+		
+	def _setup_archzfs_repo(self) -> bool:
+		"""
+		Setup the ArchZFS repository in the target system.
+		This is required for installing ZFS packages.
+		Returns True if successful, False otherwise.
+		"""
+		info("Configuring ArchZFS repository on target system...")
+		target_pacman_conf = self.target / 'etc' / 'pacman.conf'
+		
+		try:
+			# Add repo to target /etc/pacman.conf if not already present
+			with target_pacman_conf.open("a+") as f:
+				f.seek(0)
+				content = f.read()
+				if "[archzfs]" not in content:
+					# Use the repo URL from your ISO build (or standard one if consistent)
+					f.write("\n[archzfs]\nServer = https://archzfs.com/$repo/$arch\n")
+					info("Added ArchZFS repository to target system pacman.conf")
+
+			# Initialize and trust key on target system
+			info("Initializing pacman keyring and trusting ArchZFS key on target...")
+			self.arch_chroot(["pacman-key", "--init"])
+			self.arch_chroot(["pacman-key", "--recv-keys", "F75D9D76"])
+			self.arch_chroot(["pacman-key", "--lsign-key", "F75D9D76"])
+			
+			# Sync package database
+			info("Syncing package database on target system (including archzfs)...")
+			self.arch_chroot(["pacman", "-Syy", "--noconfirm"])
+			return True
+		except Exception as e:
+			error(f"Failed to configure ArchZFS repository: {e}")
+			return False
+			
+	def _prepare_pacman_cache(self) -> bool:
+		"""
+		Ensure pacman cache directories exist and are properly mounted.
+		Creates a tmpfs fallback if needed.
+		"""
+		info("Preparing pacman cache directories...")
+		try:
+			# Ensure cache directory exists and is writable
+			cache_dir = self.target / 'var/cache/pacman/pkg'
+			cache_dir.mkdir(parents=True, exist_ok=True)
+			
+			# Check if we have a mounted dataset for /var/cache/pacman
+			mount_output = SysCommand("mount").decode()
+			if not any(f"on {self.target}/var/cache/pacman " in line for line in mount_output.splitlines()):
+				warn("Warning: No dedicated ZFS dataset mounted for /var/cache/pacman")
+				
+				# Try to create a tmpfs as fallback to ensure we have space
+				tmpfs_cmd = f"mount -t tmpfs -o size=4G tmpfs {self.target}/var/cache/pacman/pkg"
+				SysCommand(tmpfs_cmd)
+				info("Created temporary filesystem for package downloads")
+				
+			return True
+		except Exception as e:
+			error(f"Failed to prepare pacman cache: {e}")
+			warn("Installation may fail due to lack of cache space")
+			return False
 
 	def perform_installation(self, mountpoint: Path) -> bool:
 		"""
@@ -743,15 +803,12 @@ class Installer:
 		# Pass kwargs down to run_command -> SysCommand
 		if run_as:
 			# Simplified handling for run_as: construct a single command string
-			# This assumes SysCommandWorker can handle shell metacharacters/quoting via shell=True or similar
-			# May need refinement depending on SysCommandWorker's execution method.
 			if isinstance(cmd, list):
 				# Join list elements into a single shell-safe string for the 'su -c' argument
 				quoted_cmd_str = shlex.join(cmd)
 			else: # cmd is already a string
 				quoted_cmd_str = shlex.quote(cmd)
-				quoted_cmd_str = shlex.quote(cmd)
-
+			
 			# The command to run inside chroot: su - user -c '...'
 			inner_cmd = ["su", "-", run_as, "-c", quoted_cmd_str]
 			# Pass this *list* to run_command, which will prepend arch-chroot
@@ -891,6 +948,9 @@ class Installer:
 		if self._has_zfs_config():
 			info("ZFS configuration detected. Ensuring fallback kernels and ZFS hook are included.")
 			
+			# Verify ZFS configuration is properly set with defaults
+			ensure_zfs_config_defaults()
+			
 			# Ensure linux (stable) kernel and headers are present
 			if 'linux' not in self._base_packages:
 				self._base_packages.append('linux')
@@ -963,61 +1023,21 @@ class Installer:
 		# Configure repo and install ZFS DKMS packages on the target system AFTER pacstrap
 		if self._has_zfs_config():
 			# 1. Configure ArchZFS repository on target system FIRST
-			info("Configuring ArchZFS repository on target system...")
-			target_pacman_conf = self.target / 'etc' / 'pacman.conf'
-			try:
-				# Add repo to target /etc/pacman.conf
-				with target_pacman_conf.open("a+") as f:
-					f.seek(0)
-					content = f.read()
-					if "[archzfs]" not in content:
-						# Use the repo URL from your ISO build (or standard one if consistent)
-						f.write("\n[archzfs]\nServer = https://archzfs.com/$repo/$arch\n") # Using standard URL, adjust if your ISO uses experimental
+			if not self._setup_archzfs_repo():
+				raise RequirementError("Failed to configure ArchZFS repository on target.")
+				
+			# 2. Prepare pacman cache directories for package installation
+			self._prepare_pacman_cache()
 
-				# Initialize and trust key on target system
-				info("Initializing pacman keyring and trusting ArchZFS key on target...")
-				self.arch_chroot(["pacman-key", "--init"])
-				# Optionally populate archlinux keys first if default keyring is empty
-				# self.arch_chroot(["pacman-key", "--populate", "archlinux"])
-				self.arch_chroot(["pacman-key", "--recv-keys", "F75D9D76"])
-				self.arch_chroot(["pacman-key", "--lsign-key", "F75D9D76"])
-				info("Syncing package database on target system (including archzfs)...")
-				self.arch_chroot(["pacman", "-Syy", "--noconfirm"])
-			except Exception as e:
-				# Simplify error logging: Use the string representation of the exception
-				detail = str(e)
-				error(f"Failed to configure ArchZFS repository or sync databases on target: {e}\nOutput:\n{detail}")
-				warn("Proceeding without ArchZFS repo configured. ZFS package installation will likely fail.")
-				# For now, let's make it fatal as ZFS won't work without the repo setup.
-				raise RequirementError("Failed to configure ArchZFS repository on target.") from e
-
-			# 2. Now attempt to install ZFS packages using the configured repo
+			# 3. Now attempt to install ZFS packages using the configured repo
 			info("Installing ZFS DKMS packages onto target system...")
 			try:
-				# First ensure cache directory exists and is writable
-				cache_dir = self.target / 'var/cache/pacman/pkg'
-				cache_dir.mkdir(parents=True, exist_ok=True)
-				
-				# Check if we have a mounted dataset for /var/cache/pacman
-				try:
-					mount_output = SysCommand("mount").decode()
-					if not any(f"on {self.target}/var/cache/pacman " in line for line in mount_output.splitlines()):
-						warn("Warning: No dedicated ZFS dataset mounted for /var/cache/pacman")
-						# Try to create a tmpfs as fallback to ensure we have space
-						SysCommand(f"mount -t tmpfs -o size=4G tmpfs {self.target}/var/cache/pacman/pkg")
-						info("Created temporary filesystem for package downloads")
-				except Exception as mount_err:
-					warn(f"Failed to create temporary filesystem: {mount_err}")
-				
 				# Install dkms variant and utils. Headers were installed by pacstrap.
-				# Use --needed to avoid reinstalling headers if base included them
 				info("Running pacman to install ZFS packages...")
 				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"], peek_output=True)
 				info("ZFS packages successfully installed")
 			except Exception as e:
-				# Simplify error logging: Use the string representation of the exception
-				detail = str(e)
-				error(f"Failed to install ZFS DKMS packages onto target system: {e}\nOutput:\n{detail}")
+				error(f"Failed to install ZFS DKMS packages onto target system: {e}")
 				# If this fails now, it's likely a genuine download issue or conflict
 				raise RequirementError("Failed to install essential ZFS packages on target.") from e
 

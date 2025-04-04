@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 from ..lib.storage import storage
 from ..lib.output import info
+from ..lib.zfs import ZFS_DEFAULTS, ensure_zfs_config_defaults
 from .curses_menu import EditMenu, SelectMenu
 from ..lib.menu.list_manager import ListManager
 from .menu_item import MenuItem, MenuItemGroup
@@ -20,14 +21,8 @@ class ZFSMenu:
         """
         Show the ZFS configuration menu
         """
-        if not storage.get('zfs_pool_name', None):
-            # Initialize with defaults if not set
-            storage['zfs_pool_name'] = 'ROOT'
-            storage['zfs_compression'] = 'lz4'
-            storage['zfs_boot_environment'] = 'default'
-            storage['zfs_encryption'] = False
-            storage['zfs_encryption_password'] = ''
-            storage['zfs_boot_strategy'] = 'zfs_boot'  # Default to ZFS boot
+        # Ensure all ZFS defaults are properly set
+        ensure_zfs_config_defaults()
         
         # First prompt for boot strategy if not already chosen
         if not storage.get('zfs_boot_strategy_selected', False):
@@ -35,11 +30,11 @@ class ZFSMenu:
         
         while True:
             options = [
-                ('Pool Name', storage.get('zfs_pool_name', 'ROOT')),
-                ('Compression', storage.get('zfs_compression', 'lz4')),
-                ('ZFS System Root Dataset Name', storage.get('zfs_boot_environment', 'default')),
+                ('Pool Name', storage.get('zfs_pool_name', ZFS_DEFAULTS['pool_name'])),
+                ('Compression', storage.get('zfs_compression', ZFS_DEFAULTS['compression'])),
+                ('ZFS System Root Dataset Name', storage.get('zfs_boot_environment', ZFS_DEFAULTS['boot_environment'])),
                 ('Boot Strategy', 'ZFS Boot' if storage.get('zfs_boot_strategy', 'zfs_boot') == 'zfs_boot' else 'Separate Boot Partition'),
-                ('Enable Encryption', 'Yes' if storage.get('zfs_encryption', False) else 'No'),
+                ('Enable Encryption', 'Yes' if storage.get('zfs_encryption', ZFS_DEFAULTS['encryption']) else 'No'),
             ]
             
             if storage.get('zfs_encryption', False):
@@ -69,7 +64,7 @@ class ZFSMenu:
             if selected_option == 'Pool Name':
                 result = EditMenu(
                     'Enter ZFS pool name: ',
-                    default_text=storage.get('zfs_pool_name', 'ROOT'),
+                    default_text=storage.get('zfs_pool_name', ZFS_DEFAULTS['pool_name']),
                     allow_skip=True
                 ).input()
                 
@@ -101,7 +96,7 @@ class ZFSMenu:
             elif selected_option == 'ZFS System Root Dataset Name':
                 result = EditMenu(
                     'Enter ZFS System Root Dataset Name (this configures where your system will boot from): ',
-                    default_text=storage.get('zfs_boot_environment', 'default'),
+                    default_text=storage.get('zfs_boot_environment', ZFS_DEFAULTS['boot_environment']),
                     allow_skip=True
                 ).input()
                 

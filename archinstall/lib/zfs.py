@@ -10,6 +10,34 @@ from .exceptions import DiskError
 from .general import SysCommand, SysCallError, SysCommandWorker
 from .storage import storage
 
+# Define ZFS defaults centrally to avoid duplication
+ZFS_DEFAULTS = {
+    'pool_name': 'ROOT',
+    'compression': 'lz4',
+    'boot_environment': 'default',
+    'encryption': False, 
+    'encryption_password': ''
+}
+
+def get_zfs_config(key: str) -> Any:
+    """
+    Get ZFS configuration with fallback to defaults.
+    Centralizes all ZFS configuration retrieval to ensure consistency.
+    """
+    storage_key = f'zfs_{key}'
+    return storage.get(storage_key, ZFS_DEFAULTS.get(key, None))
+
+def ensure_zfs_config_defaults() -> None:
+    """
+    Ensure all ZFS configuration has defaults set in storage.
+    Call this before ZFS operations to ensure consistent configuration.
+    """
+    for key, default in ZFS_DEFAULTS.items():
+        storage_key = f'zfs_{key}'
+        if storage_key not in storage:
+            storage[storage_key] = default
+            info(f"Setting default ZFS {key}: {default}")
+
 class ZFSManager:
     """
     Standalone ZFS management for Archinstall.
@@ -18,17 +46,17 @@ class ZFSManager:
     """
     
     def __init__(self):
-        # Get configuration from storage or use defaults
-        raw_pool_name = storage.get('zfs_pool_name')
-        self._pool_name = raw_pool_name if raw_pool_name else "ROOT"
-        self._compression = storage.get('zfs_compression', "lz4")
-        self._boot_environment = storage.get('zfs_boot_environment', "default")
-        self._enable_encryption = storage.get('zfs_encryption', False)
-        self._encryption_password = storage.get('zfs_encryption_password', '')
+        # Get configuration from storage with defaults
+        ensure_zfs_config_defaults()
+        self._pool_name = get_zfs_config('pool_name')
+        self._compression = get_zfs_config('compression')
+        self._boot_environment = get_zfs_config('boot_environment')
+        self._enable_encryption = get_zfs_config('encryption')
+        self._encryption_password = get_zfs_config('encryption_password')
         
         # Log configuration for debugging
         info(f"ZFS Manager initialized with:")
-        info(f"- Pool name: {self._pool_name} (from storage: {raw_pool_name})")
+        info(f"- Pool name: {self._pool_name}")
         info(f"- Boot environment: {self._boot_environment}")
         info(f"- Compression: {self._compression}")
         info(f"- Encryption enabled: {self._enable_encryption}")
@@ -60,6 +88,17 @@ class ZFSManager:
             error(f"Error creating ZFS pool: {e}")
             return False
 
+    def create_dataset(self, mountpoint: str, dataset_path: str) -> bool:
+        """Helper method to create a single dataset with error handling"""
+        try:
+            info(f"ZFS: Creating dataset {dataset_path} with mountpoint {mountpoint}")
+            SysCommand(["zfs", "create", "-o", f"mountpoint={mountpoint}", dataset_path])
+            info(f"ZFS: Successfully created dataset {dataset_path}")
+            return True
+        except Exception as e:
+            error(f"ZFS: Error creating dataset {dataset_path}: {e}")
+            return False
+            
     def create_datasets(self) -> bool:
         """Create basic ZFS datasets structure"""
         try:
@@ -78,8 +117,7 @@ class ZFSManager:
                 "-o", f"compression={self._compression}",
                 f"{self._pool_name}/ROOT/{self._boot_environment}"])
             
-            # Create other datasets one by one with EXPLICIT error handling for each
-            # This ensures one failing dataset doesn't prevent others from being created
+            # Define all datasets to create - we'll track success rate
             datasets = [
                 ["/home", f"{self._pool_name}/home"],
                 ["/var", f"{self._pool_name}/var"],
@@ -91,17 +129,18 @@ class ZFSManager:
                 ["/tmp", f"{self._pool_name}/tmp"]
             ]
             
+            # Track success and attempt to create all datasets
+            success_count = 0
             for mountpoint, dataset in datasets:
-                try:
-                    info(f"ZFS: Creating dataset {dataset} with mountpoint {mountpoint}")
-                    SysCommand(["zfs", "create", "-o", f"mountpoint={mountpoint}", dataset])
-                    info(f"ZFS: Successfully created dataset {dataset}")
-                except Exception as e:
-                    error(f"ZFS: Error creating dataset {dataset}: {e}")
-                    # Continue to create other datasets even if one fails
+                if self.create_dataset(mountpoint, dataset):
+                    success_count += 1
             
-            info("ZFS: All datasets creation attempts completed")
-            return True
+            # Report on dataset creation results
+            total = len(datasets)
+            info(f"ZFS: Created {success_count} of {total} datasets successfully")
+            
+            # Consider success if at least the critical datasets were created
+            return success_count > 0
         except Exception as e:
             error(f"ZFS: Major error in dataset creation process: {e}")
             return False
