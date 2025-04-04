@@ -928,15 +928,6 @@ class Installer:
 					error(f"Could not decode worker log: {e}")
 			return False
 			
-	def run_command(self, cmd, **kwargs):
-		if not isinstance(cmd, list):
-			cmd = [str(cmd)]
-
-		if 'arch-chroot' != cmd[0]:
-			cmd = ['arch-chroot', str(self.target)] + cmd
-
-		return SysCommand(cmd, **kwargs)
-
 	def _get_microcode(self) -> Path | None:
 		if not SysInfo.is_vm():
 			if vendor := SysInfo.cpu_vendor():
