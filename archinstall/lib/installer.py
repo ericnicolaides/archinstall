@@ -1016,12 +1016,10 @@ class Installer:
 				info("Syncing package database on target system (including archzfs)...")
 				self.arch_chroot(["pacman", "-Syy", "--noconfirm"])
 			except Exception as e:
-				detail = ''
-				if isinstance(e, SysCallError) and e.worker and e.worker.session:
-					detail = e.worker.session.decode()
+				# Simplify error logging: Use the string representation of the exception
+				detail = str(e)
 				error(f"Failed to configure ArchZFS repository or sync databases on target: {e}\nOutput:\n{detail}")
 				warn("Proceeding without ArchZFS repo configured. ZFS package installation will likely fail.")
-				# Raising here might be too aggressive, maybe just warn and let the install fail later?
 				# For now, let's make it fatal as ZFS won't work without the repo setup.
 				raise RequirementError("Failed to configure ArchZFS repository on target.") from e
 
@@ -1032,10 +1030,8 @@ class Installer:
 				# Use --needed to avoid reinstalling headers if base included them
 				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"], peek_output=True)
 			except Exception as e:
-				# Log error, potentially raise or warn user
-				detail = ''
-				if isinstance(e, SysCallError) and e.worker and e.worker.session:
-					detail = e.worker.session.decode()
+				# Simplify error logging: Use the string representation of the exception
+				detail = str(e)
 				error(f"Failed to install ZFS DKMS packages onto target system: {e}\nOutput:\n{detail}")
 				# If this fails now, it's likely a genuine download issue or conflict
 				raise RequirementError("Failed to install essential ZFS packages on target.") from e
