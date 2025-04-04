@@ -992,19 +992,9 @@ class Installer:
 		pacman_conf.persist()
 
 		# == ZFS Post-Install Configuration ==
-		# Install ZFS DKMS packages and configure repo on the target system AFTER pacstrap
+		# Configure repo and install ZFS DKMS packages on the target system AFTER pacstrap
 		if self._has_zfs_config():
-			info("Installing ZFS DKMS packages onto target system...")
-			try:
-				# Install dkms variant and utils. Headers are installed by pacstrap now.
-				# Use --needed to avoid reinstalling headers if base included them
-				# Headers (`linux-headers`, `linux-lts-headers`) should already be installed by pacstrap.
-				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"], peek_output=True) # Example: Pass peek_output if needed
-			except Exception as e:
-				# Log error, potentially raise or warn user
-				error(f"Failed to install ZFS DKMS packages onto target system: {e}")
-				raise RequirementError("Failed to install essential ZFS packages on target.") from e
-
+			# 1. Configure ArchZFS repository on target system FIRST
 			info("Configuring ArchZFS repository on target system...")
 			target_pacman_conf = self.target / 'etc' / 'pacman.conf'
 			try:
@@ -1023,11 +1013,33 @@ class Installer:
 				# self.arch_chroot(["pacman-key", "--populate", "archlinux"])
 				self.arch_chroot(["pacman-key", "--recv-keys", "F75D9D76"])
 				self.arch_chroot(["pacman-key", "--lsign-key", "F75D9D76"])
-				info("Syncing package database on target system...")
-				self.arch_chroot(["pacman", "-Syy"])
+				info("Syncing package database on target system (including archzfs)...")
+				self.arch_chroot(["pacman", "-Syy", "--noconfirm"])
 			except Exception as e:
-				warn(f"Failed to configure ArchZFS repository on target system: {e}")
-				warn("ZFS updates on the installed system may fail.")
+				detail = ''
+				if isinstance(e, SysCallError) and e.worker and e.worker.session:
+					detail = e.worker.session.decode()
+				error(f"Failed to configure ArchZFS repository or sync databases on target: {e}\nOutput:\n{detail}")
+				warn("Proceeding without ArchZFS repo configured. ZFS package installation will likely fail.")
+				# Raising here might be too aggressive, maybe just warn and let the install fail later?
+				# For now, let's make it fatal as ZFS won't work without the repo setup.
+				raise RequirementError("Failed to configure ArchZFS repository on target.") from e
+
+			# 2. Now attempt to install ZFS packages using the configured repo
+			info("Installing ZFS DKMS packages onto target system...")
+			try:
+				# Install dkms variant and utils. Headers were installed by pacstrap.
+				# Use --needed to avoid reinstalling headers if base included them
+				self.arch_chroot(["pacman", "-S", "--noconfirm", "--needed", "zfs-dkms", "zfs-utils"], peek_output=True)
+			except Exception as e:
+				# Log error, potentially raise or warn user
+				detail = ''
+				if isinstance(e, SysCallError) and e.worker and e.worker.session:
+					detail = e.worker.session.decode()
+				error(f"Failed to install ZFS DKMS packages onto target system: {e}\nOutput:\n{detail}")
+				# If this fails now, it's likely a genuine download issue or conflict
+				raise RequirementError("Failed to install essential ZFS packages on target.") from e
+
 		# == End ZFS Post-Install ==
 
 		# Periodic TRIM may improve the performance and longevity of SSDs whilst
