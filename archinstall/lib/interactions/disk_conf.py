@@ -681,7 +681,7 @@ def suggest_zfs_layout(device: BDevice) -> DeviceModification:
 	
 	# If ZFS is selected but no ZFS config done yet, initialize with defaults and show config menu
 	if not storage.get('zfs_pool_name'):
-		storage['zfs_pool_name'] = 'rpool'
+		storage['zfs_pool_name'] = 'ROOT'
 		storage['zfs_compression'] = 'lz4'
 		storage['zfs_boot_environment'] = 'default'
 		storage['zfs_encryption'] = False

@@ -19,7 +19,7 @@ class ZFSManager:
     
     def __init__(self):
         # Get configuration from storage or use defaults
-        self._pool_name = storage.get('zfs_pool_name', "rpool")
+        self._pool_name = storage.get('zfs_pool_name', "ROOT")
         self._compression = storage.get('zfs_compression', "lz4")
         self._boot_environment = storage.get('zfs_boot_environment', "default")
         self._enable_encryption = storage.get('zfs_encryption', False)

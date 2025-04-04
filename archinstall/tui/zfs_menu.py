@@ -22,7 +22,7 @@ class ZFSMenu:
         """
         if not storage.get('zfs_pool_name', None):
             # Initialize with defaults if not set
-            storage['zfs_pool_name'] = 'rpool'
+            storage['zfs_pool_name'] = 'ROOT'
             storage['zfs_compression'] = 'lz4'
             storage['zfs_boot_environment'] = 'default'
             storage['zfs_encryption'] = False
@@ -35,7 +35,7 @@ class ZFSMenu:
         
         while True:
             options = [
-                ('Pool Name', storage.get('zfs_pool_name', 'rpool')),
+                ('Pool Name', storage.get('zfs_pool_name', 'ROOT')),
                 ('Compression', storage.get('zfs_compression', 'lz4')),
                 ('ZFS System Root Dataset Name', storage.get('zfs_boot_environment', 'default')),
                 ('Boot Strategy', 'ZFS Boot' if storage.get('zfs_boot_strategy', 'zfs_boot') == 'zfs_boot' else 'Separate Boot Partition'),
@@ -69,7 +69,7 @@ class ZFSMenu:
             if selected_option == 'Pool Name':
                 result = EditMenu(
                     'Enter ZFS pool name: ',
-                    default_text=storage.get('zfs_pool_name', 'rpool'),
+                    default_text=storage.get('zfs_pool_name', 'ROOT'),
                     allow_skip=True
                 ).input()
                 

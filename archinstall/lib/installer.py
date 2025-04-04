@@ -1349,7 +1349,7 @@ class Installer:
 		kernel_parameters = ' '.join(self._get_kernel_params(root, False, False))
 		# Add ZFS-specific parameters if needed
 		if self._has_zfs_config():
-			pool_name = storage.get('zfs_pool_name', "rpool")
+			pool_name = storage.get('zfs_pool_name', "ROOT")
 			boot_env = storage.get('zfs_boot_environment', "default")
 			kernel_parameters = f'root=ZFS={pool_name}/ROOT/{boot_env} zfs_force=1 {kernel_parameters}'
 			
