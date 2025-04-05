@@ -682,6 +682,57 @@ class EditMenu(AbstractCurses):
 		return True
 
 
+class TextInput(EditMenu):
+	def __init__(
+		self,
+		title: str,
+		prompt: str = "",
+		preset: str = "",
+		validator: Callable[[str], str | None] | None = None,
+		allow_skip: bool = False,
+		allow_reset: bool = False,
+		reset_warning_msg: str | None = None,
+		alignment: Alignment = Alignment.CENTER,
+		hide_input: bool = False
+	):
+		super().__init__(
+			title,
+			header=prompt,
+			validator=validator,
+			allow_skip=allow_skip,
+			allow_reset=allow_reset,
+			reset_warning_msg=reset_warning_msg,
+			alignment=alignment,
+			default_text=preset,
+			hide_input=hide_input
+		)
+
+
+class PasswordInput(TextInput):
+	def __init__(
+		self,
+		title: str,
+		prompt: str = "",
+		preset: str = "",
+		validator: Callable[[str], str | None] | None = None,
+		allow_skip: bool = False,
+		allow_reset: bool = False,
+		reset_warning_msg: str | None = None,
+		alignment: Alignment = Alignment.CENTER
+	):
+		super().__init__(
+			title,
+			prompt=prompt,
+			preset=preset,
+			validator=validator,
+			allow_skip=allow_skip,
+			allow_reset=allow_reset,
+			reset_warning_msg=reset_warning_msg,
+			alignment=alignment,
+			hide_input=True
+		)
+
+
 class SelectMenu(AbstractCurses):
 	def __init__(
 		self,
