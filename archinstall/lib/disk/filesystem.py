@@ -74,22 +74,23 @@ class FilesystemHandler:
 			for mod in device_mods:
 				if boot_part := mod.get_boot_partition():
 					debug(f'Formatting boot partition: {boot_part.dev_path}')
-					self._format_partitions(
-						[boot_part],
-						mod.device_path
-					)
+					self._format_partitions([boot_part], mod.device_path)
 
 			self.perform_lvm_operations()
 		else:
 			for mod in device_mods:
-				self._format_partitions(
-					mod.partitions,
-					mod.device_path
-				)
+				self._format_partitions(mod.partitions, mod.device_path)
 
 				for part_mod in mod.partitions:
 					if part_mod.fs_type == FilesystemType.Btrfs:
 						device_handler.create_btrfs_volumes(part_mod, enc_conf=self._enc_config)
+					elif part_mod.fs_type == FilesystemType.Zfs:
+						# Handle ZFS formatting
+						# Check if we have a ZFS configuration from guided install
+						zfs_config = mod.zfs_config
+						success = device_handler.create_zfs_pool(zfs_config, part_mod)
+						if not success:
+							error(f"Failed to create ZFS pool on {part_mod.dev_path}")
 
 	def _format_partitions(
 		self,
@@ -106,7 +107,8 @@ class FilesystemHandler:
 
 		self._validate_partitions(create_or_modify_parts)
 
-		for part_mod in create_or_modify_parts:
+		# Skip ZFS partitions - they're handled in perform_filesystem_operations
+		for part_mod in [p for p in create_or_modify_parts if p.fs_type != FilesystemType.Zfs]:
 			# partition will be encrypted
 			if self._enc_config is not None and part_mod in self._enc_config.partitions:
 				device_handler.format_encrypted(

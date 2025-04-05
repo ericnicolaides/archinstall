@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 from archinstall.lib.args import arch_config_handler
 from archinstall.lib.disk.device_handler import device_handler
@@ -27,8 +28,8 @@ from archinstall.lib.models.device_model import (
 	Unit,
 	_DeviceInfo,
 )
-from archinstall.lib.output import debug
-from archinstall.tui.curses_menu import SelectMenu
+from archinstall.lib.output import debug, warn
+from archinstall.tui.curses_menu import SelectMenu, TextInput, PasswordInput
 from archinstall.tui.menu_item import MenuItem, MenuItemGroup
 from archinstall.tui.types import Alignment, FrameProperties, Orientation, PreviewStyle, ResultType
 
@@ -255,7 +256,8 @@ def select_main_filesystem_format() -> FilesystemType:
 		MenuItem('btrfs', value=FilesystemType.Btrfs),
 		MenuItem('ext4', value=FilesystemType.Ext4),
 		MenuItem('xfs', value=FilesystemType.Xfs),
-		MenuItem('f2fs', value=FilesystemType.F2fs)
+		MenuItem('f2fs', value=FilesystemType.F2fs),
+		MenuItem('zfs', value=FilesystemType.Zfs)
 	]
 
 	if arch_config_handler.args.advanced:
@@ -320,13 +322,94 @@ def process_root_partition_size(total_size: Size, sector_size: SectorSize) -> Si
 		return Size(value=length, unit=Unit.GiB, sector_size=sector_size)
 
 
+@dataclass
+class ZfsConfiguration:
+	pool_name: str = "rpool"
+	boot_on_zfs: bool = False
+	compression: str = "lz4"
+	encrypt: bool = False
+	encryption_password: str | None = None
+
+
+def _create_zfs_config_menu(preset: ZfsConfiguration | None = None) -> ZfsConfiguration:
+	config = preset if preset else ZfsConfiguration()
+
+	# 1. Pool Name
+	pool_name_result = TextInput(
+		title=str(_('ZFS Pool Name')),
+		prompt=str(_('Enter the name for the main ZFS pool (default: rpool)')),
+		preset=config.pool_name
+	).run()
+	if pool_name_result.type_ == ResultType.Selection and pool_name_result.value:
+		config.pool_name = pool_name_result.value
+
+	# 2. Boot on ZFS?
+	boot_on_zfs_result = SelectMenu(
+		MenuItemGroup.yes_no(default_is_no=True),
+		title=str(_('Create Boot Pool on ZFS? (Experimental)')),
+		header=str(_('Requires separate /boot partition formatted appropriately (e.g., FAT32 for ESP). If No, /boot will be formatted usually (e.g., FAT32/EXT4). ZFS boot requires manual setup post-install.')),
+		allow_skip=False
+	).run()
+	if boot_on_zfs_result.type_ == ResultType.Selection:
+		config.boot_on_zfs = boot_on_zfs_result.item() == MenuItem.yes()
+		if config.boot_on_zfs:
+			warn("Booting directly from ZFS (bpool) is experimental and requires manual bootloader configuration (e.g., GRUB setup, systemd-boot with zfsbootmenu) after installation.")
+
+	# 3. Compression Type
+	compression_items = [
+		MenuItem('lz4', value='lz4'),
+		MenuItem('zstd', value='zstd'),
+		MenuItem('gzip', value='gzip'),
+		MenuItem('off', value='off'),
+	]
+	compression_group = MenuItemGroup(compression_items)
+	compression_group.set_focus_by_value(config.compression)
+
+	compression_result = SelectMenu(
+		compression_group,
+		title=str(_('ZFS Compression Type')),
+		header=str(_('Select the compression algorithm for the pool (lz4 is generally recommended)')),
+		allow_skip=False
+	).run()
+	if compression_result.type_ == ResultType.Selection:
+		config.compression = compression_result.value
+
+	# 4. Enable Encryption?
+	encrypt_result = SelectMenu(
+		MenuItemGroup.yes_no(default_is_no=True),
+		title=str(_('Enable ZFS Native Encryption?')),
+		header=str(_('Encrypt the main pool (datasets inherit). Excludes /boot. Requires manual unlocking at boot.')),
+		allow_skip=False
+	).run()
+	if encrypt_result.type_ == ResultType.Selection:
+		config.encrypt = encrypt_result.item() == MenuItem.yes()
+		if config.encrypt:
+			password_result = PasswordInput(
+				title=str(_('ZFS Encryption Passphrase')),
+				prompt=str(_('Enter the passphrase for ZFS encryption (cannot be recovered!)'))
+			).run()
+			if password_result.type_ == ResultType.Selection and password_result.value:
+				config.encryption_password = password_result.value
+			else:
+				warn("Encryption passphrase not provided. Disabling ZFS encryption.")
+				config.encrypt = False
+				config.encryption_password = None
+
+	return config
+
+
 def suggest_single_disk_layout(
 	device: BDevice,
 	filesystem_type: FilesystemType | None = None,
 	separate_home: bool | None = None
 ) -> DeviceModification:
+	zfs_config: ZfsConfiguration | None = None
+
 	if not filesystem_type:
 		filesystem_type = select_main_filesystem_format()
+
+	if filesystem_type == FilesystemType.Zfs:
+		zfs_config = _create_zfs_config_menu()
 
 	sector_size = device.device_info.sector_size
 	total_size = device.device_info.total_size
@@ -353,6 +436,8 @@ def suggest_single_disk_layout(
 		mount_options = []
 
 	device_modification = DeviceModification(device, wipe=True)
+	if zfs_config:
+		device_modification.zfs_config = zfs_config
 
 	using_gpt = device_handler.partition_table.is_gpt()
 
@@ -375,54 +460,52 @@ def suggest_single_disk_layout(
 	boot_partition = _boot_partition(sector_size, using_gpt)
 	device_modification.add_partition(boot_partition)
 
-	if (
-		separate_home is False
-		or using_subvolumes
-		or total_size < min_size_to_allow_home_part
-	):
-		using_home_partition = False
-	elif separate_home:
-		using_home_partition = True
-	else:
-		prompt = str(_('Would you like to create a separate partition for /home?')) + '\n'
-		group = MenuItemGroup.yes_no()
-		group.set_focus_by_value(MenuItem.yes().value)
-		result = SelectMenu(
-			group,
-			header=prompt,
-			orientation=Orientation.HORIZONTAL,
-			columns=2,
-			alignment=Alignment.CENTER,
-			allow_skip=False
-		).run()
+	if filesystem_type != FilesystemType.Zfs:
+		if (
+			separate_home is False
+			or using_subvolumes
+			or total_size < min_size_to_allow_home_part
+		):
+			using_home_partition = False
+		elif separate_home:
+			using_home_partition = True
+		else:
+			prompt = str(_('Would you like to create a separate partition for /home?')) + '\n'
+			group = MenuItemGroup.yes_no()
+			group.set_focus_by_value(MenuItem.yes().value)
+			result = SelectMenu(
+				group,
+				header=prompt,
+				orientation=Orientation.HORIZONTAL,
+				columns=2,
+				alignment=Alignment.CENTER,
+				allow_skip=False
+			).run()
 
-		using_home_partition = result.item() == MenuItem.yes()
+			using_home_partition = result.item() == MenuItem.yes()
 
-	# root partition
 	root_start = boot_partition.start + boot_partition.length
 
-	# Set a size for / (/root)
 	if using_home_partition:
 		root_length = process_root_partition_size(total_size, sector_size)
 	else:
 		root_length = available_space - root_start
+
+	root_fs_type = filesystem_type if filesystem_type != FilesystemType.Zfs else None
+	root_mountpoint = Path('/') if not using_subvolumes and filesystem_type != FilesystemType.Zfs else None
 
 	root_partition = PartitionModification(
 		status=ModificationStatus.Create,
 		type=PartitionType.Primary,
 		start=root_start,
 		length=root_length,
-		mountpoint=Path('/') if not using_subvolumes else None,
-		fs_type=filesystem_type,
+		mountpoint=root_mountpoint,
+		fs_type=root_fs_type,
 		mount_options=mount_options
 	)
-
 	device_modification.add_partition(root_partition)
 
-	if using_subvolumes:
-		# https://btrfs.wiki.kernel.org/index.php/FAQ
-		# https://unix.stackexchange.com/questions/246976/btrfs-subvolume-uuid-clash
-		# https://github.com/classy-giraffe/easy-arch/blob/main/easy-arch.sh
+	if using_subvolumes and filesystem_type == FilesystemType.Btrfs:
 		subvolumes = [
 			SubvolumeModification(Path('@'), Path('/')),
 			SubvolumeModification(Path('@home'), Path('/home')),
@@ -431,10 +514,7 @@ def suggest_single_disk_layout(
 			SubvolumeModification(Path('@.snapshots'), Path('/.snapshots'))
 		]
 		root_partition.btrfs_subvols = subvolumes
-	elif using_home_partition:
-		# If we don't want to use subvolumes,
-		# But we want to be able to reuse data between re-installs..
-		# A second partition for /home would be nice if we have the space for it
+	elif using_home_partition and filesystem_type != FilesystemType.Zfs:
 		home_start = root_partition.start + root_partition.length
 		home_length = available_space - home_start
 

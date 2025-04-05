@@ -773,6 +773,7 @@ class FilesystemType(Enum):
 	Ntfs = 'ntfs'
 	Xfs = 'xfs'
 	LinuxSwap = 'linux-swap'
+	Zfs = 'zfs'
 
 	# this is not a FS known to parted, so be careful
 	# with the usage from this enum
@@ -793,6 +794,8 @@ class FilesystemType(Enum):
 
 	@property
 	def parted_value(self) -> str:
+		if self == FilesystemType.Zfs:
+			return 'zfs'  # ZFS isn't directly supported by libparted
 		return self.value + '(v1)' if self == FilesystemType.LinuxSwap else self.value
 
 	@property
@@ -804,6 +807,8 @@ class FilesystemType(Enum):
 				return 'xfsprogs'
 			case FilesystemType.F2fs:
 				return 'f2fs-tools'
+			case FilesystemType.Zfs:
+				return 'zfs-dkms'  # DKMS version for latest kernel
 			case _:
 				return None
 
@@ -812,6 +817,8 @@ class FilesystemType(Enum):
 		match self:
 			case FilesystemType.Btrfs:
 				return 'btrfs'
+			case FilesystemType.Zfs:
+				return 'zfs'  # Kernel module name
 			case _:
 				return None
 
@@ -820,6 +827,8 @@ class FilesystemType(Enum):
 		match self:
 			case FilesystemType.Btrfs:
 				return '/usr/bin/btrfs'
+			case FilesystemType.Zfs:
+				return '/usr/bin/zfs'  # ZFS command-line tool
 			case _:
 				return None
 
@@ -828,6 +837,8 @@ class FilesystemType(Enum):
 		match self:
 			case FilesystemType.Btrfs:
 				return 'btrfs'
+			case FilesystemType.Zfs:
+				return 'zfs'  # mkinitcpio hook name
 			case _:
 				return None
 
@@ -1348,6 +1359,7 @@ class DeviceModification:
 	device: BDevice
 	wipe: bool
 	partitions: list[PartitionModification] = field(default_factory=list)
+	zfs_config: ZfsConfiguration | None = None
 
 	@property
 	def device_path(self) -> Path:
@@ -1586,3 +1598,12 @@ class LsblkInfo(BaseModel):
 			for name, field in cls.model_fields.items()
 			if name != 'children'
 		]
+
+
+@dataclass
+class ZfsConfiguration:
+	pool_name: str = "rpool"
+	boot_on_zfs: bool = False
+	compression: str = "lz4"
+	encrypt: bool = False
+	encryption_password: str | None = None

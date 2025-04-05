@@ -222,6 +222,44 @@ class Installer:
 	def mount_ordered_layout(self) -> None:
 		debug('Mounting ordered layout')
 
+		# First check if any ZFS root is being used
+		has_zfs_root = any(mod.get_root_partition() and 
+						   mod.get_root_partition().fs_type and 
+						   mod.get_root_partition().fs_type.fs_type_mount == 'zfs' 
+						   for mod in self._disk_config.device_modifications)
+		
+		if has_zfs_root:
+			debug("ZFS root filesystem detected, handling special ZFS mounting")
+			# For ZFS systems, ZFS creates the mountpoints and handles mounting
+			# We need to ensure the ZFS pool is imported and datasets are mounted
+			
+			# Import ZFS pools in the system
+			SysCommand('zpool import -a -f -N')
+			
+			# For a ZFS root system, find the mountpoint for '/'
+			# First, find the root pool - most likely 'rpool'
+			zfs_config = next((mod.zfs_config for mod in self._disk_config.device_modifications 
+							   if mod.zfs_config), None)
+			
+			if zfs_config:
+				pool_name = zfs_config.pool_name or 'rpool'
+				# Mount the root dataset at our target
+				SysCommand(f'zfs set mountpoint={self.target} {pool_name}/ROOT/arch')
+				SysCommand(f'zfs mount {pool_name}/ROOT/arch')
+				
+				# Ensure other datasets are mounted relative to the target
+				SysCommand(f'zfs mount -a')
+				
+				# If there's a boot pool, handle it separately
+				if zfs_config.boot_on_zfs:
+					boot_pool = 'bpool'
+					SysCommand(f'zfs set mountpoint={self.target}/boot {boot_pool}/BOOT/arch')
+					SysCommand(f'zfs mount {boot_pool}/BOOT/arch')
+			else:
+				raise ValueError("ZFS root filesystem detected but no ZFS configuration found")
+			return
+
+		# For non-ZFS filesystems, proceed with original mounting logic
 		luks_handlers: dict[Any, Luks2] = {}
 
 		match self._disk_encryption.encryption_type:
@@ -530,14 +568,36 @@ class Installer:
 		fstab_path = self.target / "etc" / "fstab"
 		info(f"Updating {fstab_path}")
 
-		try:
-			gen_fstab = SysCommand(f'genfstab {flags} {self.target}').output()
-		except SysCallError as err:
-			raise RequirementError(
-				f'Could not generate fstab, strapping in packages most likely failed (disk out of space?)\n Error: {err}')
-
-		with open(fstab_path, 'ab') as fp:
-			fp.write(gen_fstab)
+		# Check if any ZFS filesystems are being used
+		has_zfs = any(part.fs_type and part.fs_type.fs_type_mount == 'zfs' 
+					  for mod in self._disk_config.device_modifications 
+					  for part in mod.partitions)
+					  
+		if has_zfs:
+			debug("ZFS filesystem detected, generating special fstab entries")
+			# For ZFS systems, we'll create a minimal fstab with just special filesystems
+			# ZFS datasets are managed by ZFS and mounted automatically
+			with open(fstab_path, 'w') as fp:
+				fp.write("# /etc/fstab: static file system information\n"
+						"# ZFS filesystems are managed by ZFS and not by fstab\n\n"
+						"# <file system> <mount point>   <type>  <options>       <dump>  <pass>\n"
+						"proc            /proc           proc    defaults        0       0\n"
+						"sysfs           /sys            sysfs   defaults        0       0\n"
+						"devtmpfs        /dev            devtmpfs defaults       0       0\n"
+						"tmpfs           /dev/shm        tmpfs   defaults        0       0\n"
+						"devpts          /dev/pts        devpts  defaults        0       0\n"
+						"tmpfs           /tmp            tmpfs   defaults        0       0\n"
+						"tmpfs           /run            tmpfs   defaults        0       0\n")
+		else:
+			# For regular filesystems, generate the standard fstab
+			try:
+				gen_fstab = SysCommand(f'genfstab {flags} {self.target}').output()
+			except SysCallError as err:
+				raise RequirementError(
+					f'Could not generate fstab, strapping in packages most likely failed (disk out of space?)\n Error: {err}')
+			
+			with open(fstab_path, 'wb') as fp:
+				fp.write(gen_fstab)
 
 		if not fstab_path.is_file():
 			raise RequirementError('Could not create fstab file')
@@ -782,6 +842,16 @@ class Installer:
 		if (binary := fs_type.installation_binary) is not None:
 			self._binaries.append(binary)
 
+		# Special handling for ZFS
+		if fs_type.fs_type_mount == 'zfs':
+			# Add ZFS packages
+			self._base_packages.extend(['zfs-dkms', 'zfs-utils'])
+			# Add ZFS hook to initramfs
+			if 'zfs' not in self._hooks:
+				self._hooks.insert(self._hooks.index('filesystems'), 'zfs')
+			# Disable fstrim as it's not needed for ZFS
+			self._disable_fstrim = True
+
 		# https://github.com/archlinux/archinstall/issues/1837
 		if fs_type.fs_type_mount == 'btrfs':
 			self._disable_fstrim = True
@@ -802,6 +872,68 @@ class Installer:
 			if 'encrypt' not in self._hooks:
 				self._hooks.insert(self._hooks.index(before), 'encrypt')
 
+	def _load_zfs_modules(self) -> None:
+		"""
+		Load ZFS kernel modules during installation and ensure they're loaded at boot.
+		"""
+		info("Loading ZFS kernel modules")
+		
+		# Load ZFS kernel module in the live environment
+		SysCommand('modprobe zfs')
+		
+		# Ensure ZFS modules are loaded at boot in the installed system
+		modules_dir = self.target / 'etc/modules-load.d'
+		if not modules_dir.exists():
+			modules_dir.mkdir(parents=True)
+			
+		with open(f"{self.target}/etc/modules-load.d/zfs.conf", "w") as modules_file:
+			modules_file.write("# Load ZFS modules at boot\n")
+			modules_file.write("zfs\n")
+	
+	def _create_zfs_initial_snapshots(self) -> None:
+		"""
+		Creates initial ZFS snapshots after installation
+		"""
+		info("Creating initial ZFS snapshots")
+		
+		# Check if we're using ZFS
+		has_zfs = any(part.fs_type and part.fs_type.fs_type_mount == 'zfs' 
+					  for mod in self._disk_config.device_modifications 
+					  for part in mod.partitions)
+		
+		if not has_zfs:
+			debug("No ZFS filesystems found, skipping snapshot creation")
+			return
+			
+		zfs_config = next((mod.zfs_config for mod in self._disk_config.device_modifications 
+						   if mod.zfs_config), None)
+						   
+		if not zfs_config:
+			debug("No ZFS configuration found, skipping snapshot creation")
+			return
+		
+		pool_name = zfs_config.pool_name or 'rpool'
+		
+		# Create initial snapshot of root filesystem
+		debug(f"Creating initial snapshot of {pool_name}/ROOT/arch@install")
+		SysCommand(f'zfs snapshot {pool_name}/ROOT/arch@install')
+		
+		# Create snapshots of other important datasets if they exist
+		for dataset in ['home', 'var', 'var/lib', 'var/log']:
+			try:
+				SysCommand(f'zfs snapshot {pool_name}/{dataset}@install')
+				debug(f"Created snapshot of {pool_name}/{dataset}@install")
+			except:
+				debug(f"Dataset {pool_name}/{dataset} does not exist, skipping snapshot")
+				
+		# If using a boot pool, snapshot it too
+		if zfs_config.boot_on_zfs:
+			try:
+				SysCommand(f'zfs snapshot bpool/BOOT/arch@install')
+				debug(f"Created snapshot of bpool/BOOT/arch@install")
+			except:
+				debug(f"Boot pool snapshot creation failed, possibly not using a separate boot pool")
+				
 	def minimal_installation(
 		self,
 		optional_repositories: list[Repository] = [],
@@ -841,6 +973,18 @@ class Installer:
 
 		debug(f'Optional repositories: {optional_repositories}')
 
+		# Check if ZFS is used in any partition and add ZFS repository
+		has_zfs = any(part.fs_type and part.fs_type.fs_type_mount == 'zfs' 
+					  for mod in self._disk_config.device_modifications 
+					  for part in mod.partitions)
+		
+		if has_zfs:
+			# Add archzfs repository
+			debug('ZFS filesystem detected, adding archzfs repository')
+			zfs_repo = Repository('archzfs', 'Server = https://archzfs.com/$repo/$arch')
+			if zfs_repo not in optional_repositories:
+				optional_repositories.append(zfs_repo)
+
 		# This action takes place on the host system as pacstrap copies over package repository lists.
 		pacman_conf = Config(self.target)
 		pacman_conf.enable(optional_repositories)
@@ -875,6 +1019,16 @@ class Installer:
 		# TODO: Use python functions for this
 		SysCommand(f'arch-chroot {self.target} chmod 700 /root')
 
+		# Check if ZFS is used in any partition and configure ZFS services
+		has_zfs = any(part.fs_type and part.fs_type.fs_type_mount == 'zfs' 
+					  for mod in self._disk_config.device_modifications 
+					  for part in mod.partitions)
+		
+		if has_zfs:
+			self._configure_zfs_mountpoints()
+			self._configure_zfs_services()
+			self._load_zfs_modules()
+
 		if mkinitcpio and not self.mkinitcpio(['-P']):
 			error('Error generating initramfs (continuing anyway)')
 
@@ -888,6 +1042,8 @@ class Installer:
 		for plugin in plugins.values():
 			if hasattr(plugin, 'on_install'):
 				plugin.on_install(self)
+
+		self._create_zfs_initial_snapshots()
 
 	def setup_swap(self, kind: str = 'zram') -> None:
 		if kind == 'zram':
@@ -964,6 +1120,17 @@ class Installer:
 			if id_root:
 				kernel_parameters.append('root=/dev/mapper/root')
 		elif id_root:
+			# Special handling for ZFS root file system
+			if root_partition.fs_type and root_partition.fs_type.fs_type_mount == 'zfs':
+				debug('Root partition is ZFS, setting ZFS boot parameters')
+				# We use the 'zfs=rpool/ROOT/arch' format for ZFS root
+				zfs_config = self._disk_config.zfs_config
+				if zfs_config:
+					pool_name = zfs_config.pool_name or 'rpool'
+					kernel_parameters.append(f'zfs={pool_name}/ROOT/arch')
+					# No need to specify root= parameter as ZFS handles this
+					return kernel_parameters
+			
 			if partuuid:
 				debug(f'Identifying root partition by PARTUUID: {root_partition.partuuid}')
 				kernel_parameters.append(f'root=PARTUUID={root_partition.partuuid}')
@@ -1721,6 +1888,96 @@ class Installer:
 			f'systemctl show --no-pager -p SubState --value {service_name}',
 			environment_vars={'SYSTEMD_COLORS': '0'}
 		).decode()
+
+	def _configure_zfs_mountpoints(self) -> None:
+		"""
+		Configure ZFS mountpoints for the installed system.
+		This ensures that when the system boots, all ZFS datasets are mounted properly.
+		"""
+		info("Configuring ZFS mountpoints for the installed system")
+		
+		# Check if we're using ZFS
+		has_zfs = any(part.fs_type and part.fs_type.fs_type_mount == 'zfs' 
+					  for mod in self._disk_config.device_modifications 
+					  for part in mod.partitions)
+		
+		if not has_zfs:
+			debug("No ZFS filesystems found, skipping mountpoint configuration")
+			return
+			
+		zfs_config = next((mod.zfs_config for mod in self._disk_config.device_modifications 
+						   if mod.zfs_config), None)
+						   
+		if not zfs_config:
+			debug("No ZFS configuration found, skipping mountpoint configuration")
+			return
+		
+		pool_name = zfs_config.pool_name or 'rpool'
+		
+		# Set mountpoint for root dataset
+		debug(f"Setting mountpoint for {pool_name}/ROOT/arch to /")
+		SysCommand(f'zfs set mountpoint=/ {pool_name}/ROOT/arch')
+		
+		# Set mountpoints for other standard datasets if they exist
+		dataset_mountpoints = {
+			'home': '/home',
+			'var': '/var',
+			'var/lib': '/var/lib',
+			'var/log': '/var/log',
+			'var/cache': '/var/cache',
+		}
+		
+		for dataset, mountpoint in dataset_mountpoints.items():
+			try:
+				SysCommand(f'zfs list {pool_name}/{dataset}')
+				debug(f"Setting mountpoint for {pool_name}/{dataset} to {mountpoint}")
+				SysCommand(f'zfs set mountpoint={mountpoint} {pool_name}/{dataset}')
+			except:
+				debug(f"Dataset {pool_name}/{dataset} does not exist, skipping")
+				
+		# If using a boot pool, set its mountpoint too
+		if zfs_config.boot_on_zfs:
+			try:
+				debug("Setting mountpoint for bpool/BOOT/arch to /boot")
+				SysCommand(f'zfs set mountpoint=/boot bpool/BOOT/arch')
+			except:
+				debug("Boot pool mountpoint configuration failed, possibly not using a separate boot pool")
+	
+	def _configure_zfs_services(self) -> None:
+		"""
+		Configure and enable necessary ZFS services for boot and operation.
+		This method is called after a minimal installation when ZFS is detected.
+		"""
+		info("Configuring ZFS services for the installed system")
+		
+		# Enable basic ZFS services
+		self.enable_service(['zfs.target', 'zfs-import-cache.service', 'zfs-mount.service'])
+		
+		# Generate ZFS cache file
+		SysCommand(f'arch-chroot {self.target} zpool set cachefile=/etc/zfs/zpool.cache rpool')
+		
+		# Some distributions use a service that will only import pools in the cache file
+		self.enable_service('zfs-import-scan.service')
+		
+		# If we have ZFS on root, we need to add the cache at boot
+		if any(mod.get_root_partition() and mod.get_root_partition().fs_type and 
+			   mod.get_root_partition().fs_type.fs_type_mount == 'zfs' 
+			   for mod in self._disk_config.device_modifications):
+			
+			# Enable additional services for root-on-ZFS setups
+			self.enable_service([
+				'zfs-import.target',
+				'zfs.target',
+				'zfs-import-cache.service'
+			])
+			
+			# Create /etc/zfs directory
+			zfs_dir = self.target / 'etc' / 'zfs'
+			if not zfs_dir.exists():
+				zfs_dir.mkdir(parents=True)
+			
+			# Copy zpool.cache to the installed system if it exists
+			SysCommand(f'cp /etc/zfs/zpool.cache {self.target}/etc/zfs/zpool.cache')
 
 
 def accessibility_tools_in_use() -> bool:

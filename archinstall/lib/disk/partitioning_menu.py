@@ -22,9 +22,10 @@ from archinstall.tui.menu_item import MenuItem, MenuItemGroup
 from archinstall.tui.types import Alignment, FrameProperties, Orientation, ResultType
 
 from ..menu.list_manager import ListManager
-from ..output import FormattedOutput
+from ..output import FormattedOutput, warn
 from ..utils.util import prompt_dir
 from .subvolume_menu import SubvolumeMenu
+from ..interactions.disk_conf import _create_zfs_config_menu
 
 if TYPE_CHECKING:
 	from collections.abc import Callable
@@ -340,7 +341,7 @@ class PartitioningList(ListManager):
 							partition.flags = []
 							partition.set_flag(PartitionFlag.SWAP)
 						# btrfs subvolumes will define mountpoints
-						if fs_type == FilesystemType.Btrfs:
+						if fs_type == FilesystemType.Btrfs or fs_type == FilesystemType.Zfs:
 							partition.mountpoint = None
 				case 'btrfs_mark_compressed':
 					self._toggle_mount_option(partition, BtrfsMountOption.compress)
@@ -433,13 +434,13 @@ class PartitioningList(ListManager):
 		return mountpoint
 
 	def _prompt_partition_fs_type(self, prompt: str | None = None) -> FilesystemType:
-		fs_types = filter(lambda fs: fs != FilesystemType.Crypto_luks, FilesystemType)
+		fs_types = [fs for fs in FilesystemType if fs != FilesystemType.Crypto_luks]
 		items = [MenuItem(fs.value, value=fs) for fs in fs_types]
 		group = MenuItemGroup(items, sort_items=False)
 
 		result = SelectMenu(
 			group,
-			header=prompt,
+			header=prompt or str(_('Select a filesystem')),
 			alignment=Alignment.CENTER,
 			frame=FrameProperties.min(str(_('Filesystem'))),
 			allow_skip=False
@@ -447,9 +448,34 @@ class PartitioningList(ListManager):
 
 		match result.type_:
 			case ResultType.Selection:
-				return result.get_value()
+				fs_type = result.get_value()
+				# If ZFS is selected, show a simplified ZFS configuration menu
+				if fs_type == FilesystemType.Zfs:
+					self._prompt_simple_zfs_config()
+					warn(str(_('ZFS selected. For complex ZFS configurations, use the guided installer.')))
+				return fs_type
 			case _:
-				raise ValueError('Unhandled result type')
+				raise ValueError('Filesystem type not selected')
+
+	def _prompt_simple_zfs_config(self) -> None:
+		"""
+		Simplified ZFS configuration for manual partitioning.
+		This doesn't need to collect detailed information as we'll set up a basic pool.
+		"""
+		from archinstall.tui.curses_menu import TextInput
+		
+		# Just show a basic info message about manual ZFS configuration
+		warning_message = str(_('ZFS in manual partitioning mode will create a basic pool on selected partitions.')) + '\n'
+		warning_message += str(_('For advanced ZFS features like separate boot pools, multiple datasets,')) + '\n'
+		warning_message += str(_('or complex hierarchies, please use the guided installation option.'))
+		
+		# Show the warning with confirmation
+		result = SelectMenu(
+			MenuItemGroup([MenuItem(str(_('Continue')))]),
+			header=warning_message,
+			alignment=Alignment.CENTER,
+			allow_skip=False
+		).run()
 
 	def _validate_value(
 		self,

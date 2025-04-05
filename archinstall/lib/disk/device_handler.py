@@ -286,6 +286,11 @@ class DeviceHandler:
 				options.append('--fast')
 			case FilesystemType.LinuxSwap:
 				command = "mkswap"
+			case FilesystemType.Zfs:
+				# ZFS doesn't use mkfs - formatting is handled during pool creation
+				# in create_zfs_pool method
+				debug(f'ZFS detected for {path} - no mkfs required, pool will be created separately')
+				return
 			case _:
 				raise UnknownFilesystemFormat(f'Filetype "{fs_type.value}" is not supported')
 
@@ -871,6 +876,119 @@ class DeviceHandler:
 			SysCommand('udevadm settle')
 		except SysCallError as err:
 			debug(f'Failed to synchronize with udev: {err}')
+
+	def create_zfs_pool(self, zfs_config: ZfsConfiguration, partition: PartitionModification) -> bool:
+		"""
+		Creates a ZFS pool on the given partition.
+		This method supports both guided installation with full ZFS configuration and
+		manual partitioning with a simplified approach.
+		
+		Args:
+			zfs_config: ZFS configuration object or None for manual partitioning
+			partition: Partition to format as ZFS
+			
+		Returns:
+			True if success, False otherwise
+		"""
+		# For manual partitioning, we use a simplified approach - just create a basic pool
+		if zfs_config is None:
+			debug(f"Creating basic ZFS pool on {partition.dev_path}")
+			try:
+				# Simple pool creation with default options
+				pool_name = "zpool"  # Default name
+				
+				# Simple ZFS pool on a single partition
+				command = f"zpool create -f -o ashift=12 -O compression=lz4 "
+				command += f"-O acltype=posixacl -O xattr=sa -O relatime=on "
+				command += f"-O normalization=formD -O mountpoint=legacy "
+				command += f"{pool_name} {partition.dev_path}"
+				
+				SysCommand(command)
+				
+				# Create a basic dataset structure
+				SysCommand(f"zfs create -o mountpoint=/ {pool_name}/ROOT")
+				
+				debug(f"Basic ZFS pool '{pool_name}' created on {partition.dev_path}")
+				return True
+			except Exception as e:
+				error(f"Failed to create basic ZFS pool: {str(e)}")
+				return False
+		
+		# Standard ZFS configuration from guided installation
+		debug(f"Creating ZFS pool configuration from guided installer")
+		
+		# Find the root partition that will be used for ZFS
+		found_partition = False
+		zfs_partition = partition
+		
+		try:
+			pool_name = zfs_config.pool_name or "rpool"
+			
+			# Basic ZFS pool creation command
+			command = f"zpool create -f -o ashift=12 "
+			
+			# Add encryption if enabled
+			if zfs_config.encrypt and zfs_config.encryption_password:
+				command += f"-O encryption=aes-256-gcm -O keylocation=prompt -O keyformat=passphrase "
+			
+			# Add standard options
+			command += f"-O acltype=posixacl -O xattr=sa -O relatime=on "
+			command += f"-O compression={zfs_config.compression} "
+			command += f"-O normalization=formD -O mountpoint=none "
+			
+			# Create the pool with the root partition
+			command += f"{pool_name} {zfs_partition.dev_path}"
+			
+			if zfs_config.encrypt and zfs_config.encryption_password:
+				SysCommand(command, input_data=f"{zfs_config.encryption_password}\n{zfs_config.encryption_password}".encode())
+			else:
+				SysCommand(command)
+			
+			# Create the standard dataset structure
+			datasets = [
+				f"{pool_name}/ROOT",
+				f"{pool_name}/ROOT/arch",
+				f"{pool_name}/home",
+				f"{pool_name}/var",
+				f"{pool_name}/var/lib",
+				f"{pool_name}/var/log"
+			]
+			
+			for dataset in datasets:
+				SysCommand(f"zfs create -o mountpoint=none {dataset}")
+			
+			# Set appropriate mountpoints
+			SysCommand(f"zfs set mountpoint=/ {pool_name}/ROOT/arch")
+			SysCommand(f"zfs set mountpoint=/home {pool_name}/home")
+			SysCommand(f"zfs set mountpoint=/var {pool_name}/var")
+			SysCommand(f"zfs set mountpoint=/var/lib {pool_name}/var/lib")
+			SysCommand(f"zfs set mountpoint=/var/log {pool_name}/var/log")
+			
+			# If we're using a boot pool on ZFS, create it too
+			if zfs_config.boot_on_zfs:
+				# Find or create the boot pool
+				SysCommand(f"zpool create -f -o ashift=12 -O compression={zfs_config.compression} "
+						f"-O normalization=formD -O mountpoint=none bpool {boot_partition.dev_path}")
+				
+				# Create boot datasets
+				SysCommand(f"zfs create -o mountpoint=none bpool/BOOT")
+				SysCommand(f"zfs create -o mountpoint=/boot bpool/BOOT/arch")
+			
+			debug(f"ZFS pools and datasets created successfully")
+			return True
+			
+		except Exception as e:
+			error(f"Failed to create ZFS pool: {str(e)}")
+			
+			# Cleanup on failure
+			try:
+				SysCommand(f"zpool destroy {pool_name}")
+				if zfs_config.boot_on_zfs:
+					SysCommand("zpool destroy bpool")
+			except:
+				pass
+				
+			return False
 
 
 device_handler = DeviceHandler()
