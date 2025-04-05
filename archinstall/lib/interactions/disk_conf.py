@@ -44,6 +44,82 @@ if TYPE_CHECKING:
 	_: Callable[[str], DeferredTranslation]
 
 
+@dataclass
+class ZfsConfiguration:
+	pool_name: str = "rpool"
+	boot_on_zfs: bool = False
+	compression: str = "lz4"
+	encrypt: bool = False
+	encryption_password: str | None = None
+
+
+def _create_zfs_config_menu(preset: ZfsConfiguration | None = None) -> ZfsConfiguration:
+	config = preset if preset else ZfsConfiguration()
+
+	# 1. Pool Name
+	pool_name_result = TextInput(
+		title=str(_('ZFS Pool Name')),
+		prompt=str(_('Enter the name for the main ZFS pool (default: rpool)')),
+		preset=config.pool_name
+	).run()
+	if pool_name_result.type_ == ResultType.Selection and pool_name_result.value:
+		config.pool_name = pool_name_result.value
+
+	# 2. Boot on ZFS?
+	boot_on_zfs_result = SelectMenu(
+		MenuItemGroup.yes_no(default_is_no=True),
+		title=str(_('Create Boot Pool on ZFS? (Experimental)')),
+		header=str(_('Requires separate /boot partition formatted appropriately (e.g., FAT32 for ESP). If No, /boot will be formatted usually (e.g., FAT32/EXT4). ZFS boot requires manual setup post-install.')),
+		allow_skip=False
+	).run()
+	if boot_on_zfs_result.type_ == ResultType.Selection:
+		config.boot_on_zfs = boot_on_zfs_result.item() == MenuItem.yes()
+		if config.boot_on_zfs:
+			warn("Booting directly from ZFS (bpool) is experimental and requires manual bootloader configuration (e.g., GRUB setup, systemd-boot with zfsbootmenu) after installation.")
+
+	# 3. Compression Type
+	compression_items = [
+		MenuItem('lz4', value='lz4'),
+		MenuItem('zstd', value='zstd'),
+		MenuItem('gzip', value='gzip'),
+		MenuItem('off', value='off'),
+	]
+	compression_group = MenuItemGroup(compression_items)
+	compression_group.set_focus_by_value(config.compression)
+
+	compression_result = SelectMenu(
+		compression_group,
+		title=str(_('ZFS Compression Type')),
+		header=str(_('Select the compression algorithm for the pool (lz4 is generally recommended)')),
+		allow_skip=False
+	).run()
+	if compression_result.type_ == ResultType.Selection:
+		config.compression = compression_result.value
+
+	# 4. Enable Encryption?
+	encrypt_result = SelectMenu(
+		MenuItemGroup.yes_no(default_is_no=True),
+		title=str(_('Enable ZFS Native Encryption?')),
+		header=str(_('Encrypt the main pool (datasets inherit). Excludes /boot. Requires manual unlocking at boot.')),
+		allow_skip=False
+	).run()
+	if encrypt_result.type_ == ResultType.Selection:
+		config.encrypt = encrypt_result.item() == MenuItem.yes()
+		if config.encrypt:
+			password_result = PasswordInput(
+				title=str(_('ZFS Encryption Passphrase')),
+				prompt=str(_('Enter the passphrase for ZFS encryption (cannot be recovered!)'))
+			).run()
+			if password_result.type_ == ResultType.Selection and password_result.value:
+				config.encryption_password = password_result.value
+			else:
+				warn("Encryption passphrase not provided. Disabling ZFS encryption.")
+				config.encrypt = False
+				config.encryption_password = None
+
+	return config
+
+
 def select_devices(preset: list[BDevice] | None = []) -> list[BDevice]:
 	def _preview_device_selection(item: MenuItem) -> str | None:
 		device: _DeviceInfo = item.get_value()
@@ -320,82 +396,6 @@ def process_root_partition_size(total_size: Size, sector_size: SectorSize) -> Si
 		# 10% of total size
 		length = total_device_size.value // 10
 		return Size(value=length, unit=Unit.GiB, sector_size=sector_size)
-
-
-@dataclass
-class ZfsConfiguration:
-	pool_name: str = "rpool"
-	boot_on_zfs: bool = False
-	compression: str = "lz4"
-	encrypt: bool = False
-	encryption_password: str | None = None
-
-
-def _create_zfs_config_menu(preset: ZfsConfiguration | None = None) -> ZfsConfiguration:
-	config = preset if preset else ZfsConfiguration()
-
-	# 1. Pool Name
-	pool_name_result = TextInput(
-		title=str(_('ZFS Pool Name')),
-		prompt=str(_('Enter the name for the main ZFS pool (default: rpool)')),
-		preset=config.pool_name
-	).run()
-	if pool_name_result.type_ == ResultType.Selection and pool_name_result.value:
-		config.pool_name = pool_name_result.value
-
-	# 2. Boot on ZFS?
-	boot_on_zfs_result = SelectMenu(
-		MenuItemGroup.yes_no(default_is_no=True),
-		title=str(_('Create Boot Pool on ZFS? (Experimental)')),
-		header=str(_('Requires separate /boot partition formatted appropriately (e.g., FAT32 for ESP). If No, /boot will be formatted usually (e.g., FAT32/EXT4). ZFS boot requires manual setup post-install.')),
-		allow_skip=False
-	).run()
-	if boot_on_zfs_result.type_ == ResultType.Selection:
-		config.boot_on_zfs = boot_on_zfs_result.item() == MenuItem.yes()
-		if config.boot_on_zfs:
-			warn("Booting directly from ZFS (bpool) is experimental and requires manual bootloader configuration (e.g., GRUB setup, systemd-boot with zfsbootmenu) after installation.")
-
-	# 3. Compression Type
-	compression_items = [
-		MenuItem('lz4', value='lz4'),
-		MenuItem('zstd', value='zstd'),
-		MenuItem('gzip', value='gzip'),
-		MenuItem('off', value='off'),
-	]
-	compression_group = MenuItemGroup(compression_items)
-	compression_group.set_focus_by_value(config.compression)
-
-	compression_result = SelectMenu(
-		compression_group,
-		title=str(_('ZFS Compression Type')),
-		header=str(_('Select the compression algorithm for the pool (lz4 is generally recommended)')),
-		allow_skip=False
-	).run()
-	if compression_result.type_ == ResultType.Selection:
-		config.compression = compression_result.value
-
-	# 4. Enable Encryption?
-	encrypt_result = SelectMenu(
-		MenuItemGroup.yes_no(default_is_no=True),
-		title=str(_('Enable ZFS Native Encryption?')),
-		header=str(_('Encrypt the main pool (datasets inherit). Excludes /boot. Requires manual unlocking at boot.')),
-		allow_skip=False
-	).run()
-	if encrypt_result.type_ == ResultType.Selection:
-		config.encrypt = encrypt_result.item() == MenuItem.yes()
-		if config.encrypt:
-			password_result = PasswordInput(
-				title=str(_('ZFS Encryption Passphrase')),
-				prompt=str(_('Enter the passphrase for ZFS encryption (cannot be recovered!)'))
-			).run()
-			if password_result.type_ == ResultType.Selection and password_result.value:
-				config.encryption_password = password_result.value
-			else:
-				warn("Encryption passphrase not provided. Disabling ZFS encryption.")
-				config.encrypt = False
-				config.encryption_password = None
-
-	return config
 
 
 def suggest_single_disk_layout(

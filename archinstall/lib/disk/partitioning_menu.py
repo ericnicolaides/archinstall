@@ -25,7 +25,6 @@ from ..menu.list_manager import ListManager
 from ..output import FormattedOutput, warn
 from ..utils.util import prompt_dir
 from .subvolume_menu import SubvolumeMenu
-from ..interactions.disk_conf import _create_zfs_config_menu
 
 if TYPE_CHECKING:
 	from collections.abc import Callable
